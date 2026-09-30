@@ -95,13 +95,13 @@ jobs:
           disable-animations: true
           script: |
             adb install -r -g build/app/outputs/flutter-apk/app-debug.apk
-            flutter drive --driver test_driver/integration_test.dart --target integration_test/background_test.dart --use-application-binary=build/app/outputs/flutter-apk/app-debug.apk --timeout=180 --no-pub
+            python3 scripts/run_device_tests.py
             python3 scripts/device_release_smoke.py build/ci-release/app-release.apk
       - name: Collect emulator diagnostics
         if: always()
         run: |
           mkdir -p build/qa/device
-          adb logcat -d > build/qa/device/emulator-logcat.txt || true
+          timeout 10s adb logcat -d > build/qa/device/emulator-logcat.txt || true
       - name: Upload Android verification
         if: always()
         uses: actions/upload-artifact@v4

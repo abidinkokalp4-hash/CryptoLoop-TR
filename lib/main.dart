@@ -535,34 +535,36 @@ class Dashboard extends StatelessWidget {
                     ]),
                     const SizedBox(height: 17),
                     FilledButton.icon(
-                        onPressed: e.busy || c.starting
+                        onPressed: e.busy
                             ? null
-                            : e.running
+                            : e.running || c.starting
                                 ? () => c.stop()
                                 : onStart,
-                        icon: Icon(e.running
+                        icon: Icon(e.running || c.starting
                             ? Icons.stop_rounded
                             : Icons.play_arrow_rounded),
                         label: Text(c.starting
-                            ? 'Bot başlatılıyor…'
+                            ? 'Başlatmayı iptal et'
                             : e.running
                                 ? 'Botu tamamen durdur'
                                 : 'Botu başlat'),
                         style: FilledButton.styleFrom(
                             minimumSize: const Size(double.infinity, 48))),
-                    if (e.running) ...[
+                    if (e.running || c.starting) ...[
                       const SizedBox(height: 8),
                       Row(children: [
                         Expanded(
                             child: OutlinedButton(
-                                onPressed: () {
-                                  if (e.entriesPaused) {
-                                    e.resumeEntries();
-                                  } else {
-                                    e.pauseEntries();
-                                  }
-                                  unawaited(c.save());
-                                },
+                                onPressed: c.starting
+                                    ? null
+                                    : () {
+                                        if (e.entriesPaused) {
+                                          e.resumeEntries();
+                                        } else {
+                                          e.pauseEntries();
+                                        }
+                                        unawaited(c.save());
+                                      },
                                 child: Text(
                                     e.entriesPaused
                                         ? 'Alımlara devam'

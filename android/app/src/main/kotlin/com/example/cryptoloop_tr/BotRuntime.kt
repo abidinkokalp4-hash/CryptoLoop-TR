@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.engine.dart.DartExecutor
 import io.flutter.plugin.common.MethodChannel
@@ -82,6 +83,7 @@ object BotRuntime {
                     "status" -> result.success(mapOf(
                         "running" to (BotService.instance != null),
                         "wakeLock" to (BotService.instance?.hasWakeLock() == true),
+                        "screenInteractive" to app.getSystemService(PowerManager::class.java).isInteractive,
                         "notifications" to notificationsAllowed(app)))
                     // Device test commands are rejected by release builds.
                     "testBackground", "testNotificationStop" -> {

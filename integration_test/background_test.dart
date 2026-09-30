@@ -1,6 +1,7 @@
 import 'package:cryptoloop_tr/app_controller.dart';
 import 'package:cryptoloop_tr/main.dart';
 import 'package:cryptoloop_tr/models.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
@@ -33,10 +34,16 @@ void main() {
     final status = await native.invokeMapMethod<String, dynamic>('status');
     expect(status!['running'], isTrue);
     expect(status['wakeLock'], isTrue);
+    // The host runner locks the emulator on this marker, before the sale.
+    debugPrint('CRYPTOLOOP_PAPER_SERVICE_READY');
     expect(c.live, isFalse);
     expect(await native.invokeMethod<bool>('testBackground'), isTrue);
     // A real timer and execution continue after Activity.onStop; no widget pumps.
     await Future<void>.delayed(const Duration(seconds: 2));
+    expect(
+        (await native
+            .invokeMapMethod<String, dynamic>('status'))!['screenInteractive'],
+        isFalse);
     expect(c.engine.running, isTrue);
     await c.engine.onQuote(
         MarketQuote(
