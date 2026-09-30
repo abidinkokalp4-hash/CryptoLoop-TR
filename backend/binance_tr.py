@@ -22,6 +22,10 @@ ALLOWED = {
     ('POST', '/open/v1/orders/cancel'), ('POST', '/open/v1/user-listen-token'),
 }
 
+class NoRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *_args, **_kwargs):
+        return None  # Never forward API headers or signed URLs to another host.
+
 class ApiError(Exception):
     def __init__(self, message, *, uncertain=False, status=400):
         super().__init__(message)
@@ -56,7 +60,7 @@ class BinanceTrClient:
     def _transport(method, url, headers, body):
         request = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(request, timeout=10) as response:
+            with urllib.request.build_opener(NoRedirects()).open(request, timeout=10) as response:
                 return response.status, dict(response.headers), response.read()
         except urllib.error.HTTPError as exc:
             return exc.code, dict(exc.headers), exc.read()
@@ -133,8 +137,10 @@ class BinanceTrClient:
         return self._call('GET', '/open/v1/orders/detail', {'orderId': order_id} if order_id else {'clientId': client_id}, signed=True)
     def cancel(self, *, order_id=None, client_id=None):
         return self._call('POST', '/open/v1/orders/cancel', {'orderId': order_id} if order_id else {'clientId': client_id}, signed=True)
-    def trades(self, symbol, order_id):
-        return self._call('GET', '/open/v1/orders/trades', {'symbol': symbol, 'orderId': order_id, 'limit': 1000}, signed=True)['list']
+    def trades(self, symbol, order_id=None):
+        params = {'symbol': symbol, 'limit': 1000}
+        if order_id: params['orderId'] = order_id
+        return self._call('GET', '/open/v1/orders/trades', params, signed=True)['list']
     def place(self, params):
         return self._call('POST', '/open/v1/orders', params, signed=True)
     def listen_token(self):

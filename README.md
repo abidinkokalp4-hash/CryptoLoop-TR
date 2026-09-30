@@ -16,6 +16,7 @@ Türkçe, Android için Binance TR **spot** işlem asistanı. Varsayılan mod pa
 - **Paper bot**, kullanıcı başlattıktan sonra Android bildirimi ve aynı trading engine ile ekran kilitliyken/arka planda çalışır. Bildirimde **BOTU DURDUR** kontrolü vardır. Başlatma için bildirim izni gerekir; izin veya servis hatasında bot başlamaz.
 - Tek bir Flutter engine saklanır; uygulamaya dönüşte ikinci bot veya çift emir üretilmez. Servis heartbeat ile motorun yanıtını kontrol eder, wake lock yalnızca bot çalışırken tutulur. Android süreci sonlandırırsa/telefon yeniden başlarsa bot otomatik açılmaz. Paper kayıtları geri yüklenir; kullanıcı tekrar başlatır.
 - **Canlı bot** arka plana geçince güvenli şekilde durmaya devam eder. Backend şu an güvenli emir köprüsüdür, 24/7 sunucu strateji zamanlayıcısı değildir. Açık pozisyon borsada kalır; stop loss telefon motoru çalışırken uygulanır. Telefon kapalıyken kesintisiz canlı işlem için ayrı sunucu motoru gereklidir.
+- Ayarlarda **Hesabı doğrula · Emir göndermez** ile gerçek TRY bakiyesi, TRY komisyonu, fiyat/spread ve açık/belirsiz emirler salt okuma olarak kontrol edilir. Bu adım paper hesabını veya işlem modunu değiştirmez. Canlı mod seçimi de tek başına arm etmez; bot ayrıca başlatılır.
 - Telefonun pil kısıtlamaları/üretici süreç yönetimi servisi durdurabilir; cihazda uygulamanın bildirim ve pil ayarlarını kontrol edin. Ağ kesintisinde eski fiyatla paper işlem yapılmaz.
 
 ## Maliyet hesabı
@@ -78,10 +79,10 @@ Bu özel kullanım APK'sı release modunda derlenir, Android debug sertifikasıy
 
 ## Canlıya geçmeden önce
 
-1. [backend/README.md](backend/README.md) uyarınca operatörün kontrolündeki bir HTTPS sunucuyu kurun. Varsayılan canlı bayrağı kapalıdır.
-2. Binance TR API anahtarını sunucunun secret/env deposuna ekleyin: yalnızca okuma + spot; **para çekme kapalı**, sunucu IP kısıtlaması açık. Anahtarı sohbetten paylaşmayın.
-3. Sunucu sermaye limitlerini doğrulayın; anahtar yetkilerini Binance TR panelinden kontrol edin.
-4. Telefonda yalnızca HTTPS adresi ve backend kontrol token'ını bağlayın. Canlı mod uyarısını açıkça onaylayın.
-5. Bakiye/emir reconciliation ve kullanıcı onayından sonra düşük sermayeyle gerçek fill/komisyon kontrolü yapın.
+1. [Salt okuma kurulum rehberi](backend/deploy/README.md) uyarınca sizin kontrolünüzdeki HTTPS sunucuyu hazırlayın. Varsayılan canlı bayrağı kapalı, sunucu sermaye limitleri **sıfırdır**.
+2. Önce okuma anahtarını sunucunun özel deposuna ekleyin; **para çekme kapalı**, sunucu IP kısıtlaması açık olsun. Secret'ı sohbetten paylaşmayın veya telefona girmeyin.
+3. Telefonda yalnızca HTTPS adresini ve backend token'ını bağlayıp **Hesabı doğrula · Emir göndermez** ile gerçek fiyat/bakiye/TRY komisyonunu kontrol edin.
+4. Kullanıcı toplam/pozisyon sermayesi ve günlük zarar/alım sınırlarını belirledikten ve ayrı onay verdikten sonra sunucuda bu limitleri ve okuma/spot anahtarını yapılandırın. Canlı bayrağı `true` yapılınca da bot kendiliğinden arm olmaz.
+5. Uygulama ayarlarını sunucu sınırlarına eşitleyin, güncel hesap kontrolü ve iki canlı onay kutusunu tamamlayın. **Botu başlat** ayrı adımdır; başlangıçta tekrar hesap kontrolü ve reconcile yapılır. Kullanıcı tarafından başlatılan ilk gerçek işlemin fill/komisyon sonucunu doğrulayın.
 
 Geliştirme/test sürecinde gerçek anahtar bağlanmaz ve gerçek para emri gönderilmez. Live private API uçtan uca testi, bu kurulum ve ayrı kullanıcı onayından sonra yapılır.

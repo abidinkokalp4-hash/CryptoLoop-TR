@@ -53,7 +53,8 @@ class CryptoLoopApp extends StatelessWidget {
         filledButtonTheme: FilledButtonThemeData(
             style: FilledButton.styleFrom(
                 minimumSize: const Size(0, 48),
-                textStyle: const TextStyle(fontWeight: FontWeight.w700),
+                textStyle: const TextStyle(
+                    fontFamily: 'Roboto', fontWeight: FontWeight.w700),
                 shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12)))),
       ),
@@ -971,7 +972,7 @@ class _SettingsPageState extends State<SettingsPage> {
       widget.onMessage(await widget.c.activatePaper());
       return;
     }
-    var checked = false;
+    var checked = false, permissionsChecked = false;
     final approved = await showDialog<bool>(
         context: context,
         builder: (context) => StatefulBuilder(
@@ -990,11 +991,33 @@ class _SettingsPageState extends State<SettingsPage> {
                               'Canlı mod, Binance TR hesabındaki gerçek bakiyeyle AL/SAT emirleri gönderebilir. Kayıp yaşayabilirsiniz.'),
                           const SizedBox(height: 14),
                           Text(
-                              'Sermaye üst sınırı: ${money(widget.c.engine.settings.maxCapital)}\nİşlem başına üst sınır: ${money(widget.c.engine.settings.maxPosition)}'),
+                              'Sermaye üst sınırı: ${money(widget.c.engine.settings.maxCapital)}\nİşlem başına üst sınır: ${money(widget.c.engine.settings.maxPosition)}\nGünlük zarar sınırı: ${money(widget.c.engine.settings.dailyLossLimit)}\nGünlük en fazla ${widget.c.engine.settings.maxTradesPerDay} alım'),
                           const SizedBox(height: 14),
                           const Text(
                               'Önce HTTPS backend kurulmalı; API anahtarı yalnızca sunucuda ve spot işlem yetkili olmalı. Para çekme yetkisi kapalı olmalı.',
                               style: TextStyle(fontSize: 12, color: muted)),
+                          const SizedBox(height: 12),
+                          const Text(
+                              'Canlı bot telefon açık ve uygulama ön plandayken çalışır. Ekran kilitlenince bot durur; açık pozisyon borsada kalır ve telefonun stop loss kontrolü çalışmaz.',
+                              style: TextStyle(fontSize: 12, color: loss)),
+                          const SizedBox(height: 12),
+                          Text(
+                              widget.c.backendCheck?.liveProblem(
+                                      widget.c.engine.settings,
+                                      DateTime.now()) ??
+                                  (widget.c.backendCheck == null
+                                      ? 'Önce Binance TR hesabını emir göndermeden doğrulayın.'
+                                      : 'Hesap ve sunucu limitleri doğrulandı. Canlı mod tek başına botu başlatmaz.'),
+                              style:
+                                  const TextStyle(fontSize: 12, color: muted)),
+                          CheckboxListTile(
+                              contentPadding: EdgeInsets.zero,
+                              value: permissionsChecked,
+                              onChanged: (v) =>
+                                  update(() => permissionsChecked = v ?? false),
+                              title: const Text(
+                                  'Anahtarı Binance TR panelinde kontrol ettim: yalnızca okuma/spot, para çekme kapalı ve sunucu IP kısıtlaması açık.',
+                                  style: TextStyle(fontSize: 12))),
                           CheckboxListTile(
                               contentPadding: EdgeInsets.zero,
                               value: checked,
@@ -1009,7 +1032,13 @@ class _SettingsPageState extends State<SettingsPage> {
                           onPressed: () => Navigator.pop(context, false),
                           child: const Text('Vazgeç')),
                       FilledButton(
-                          onPressed: checked
+                          onPressed: checked &&
+                                  permissionsChecked &&
+                                  widget.c.backendCheck != null &&
+                                  widget.c.backendCheck!.liveProblem(
+                                          widget.c.engine.settings,
+                                          DateTime.now()) ==
+                                      null
                               ? () => Navigator.pop(context, true)
                               : null,
                           style: FilledButton.styleFrom(
@@ -1075,7 +1104,7 @@ class _SettingsPageState extends State<SettingsPage> {
                                   if (result == null) {
                                     Navigator.pop(context);
                                     widget.onMessage(
-                                        'Backend bağlantısı doğrulandı.');
+                                        'Sunucu doğrulandı. Şimdi hesabı emir göndermeden kontrol edin.');
                                   } else {
                                     update(() {
                                       loading = false;
@@ -1131,6 +1160,81 @@ class _SettingsPageState extends State<SettingsPage> {
                         ? 'Gerçek spot hesap · Emirler güvenli backend ile gönderilir.'
                         : 'Gerçek piyasa · Sanal bakiye · Gerçekçi işlem maliyetleri',
                     style: const TextStyle(color: muted, fontSize: 11)),
+              ])),
+          Panel(
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                const Text('Binance TR hesap bağlantısı',
+                    style:
+                        TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+                const SizedBox(height: 10),
+                const Text(
+                    'API anahtarı ve Secret yalnızca güvenli sunucuda saklanır. İlk kontrol bakiyeyi okur; AL/SAT veya iptal emri göndermez.',
+                    style: TextStyle(color: muted, fontSize: 12, height: 1.5)),
+                const SizedBox(height: 14),
+                OutlinedButton.icon(
+                    onPressed: widget.c.checkingBackend ? null : backend,
+                    icon: const Icon(Icons.shield_outlined),
+                    label: Text(widget.c.backendUrl.isEmpty
+                        ? 'Güvenli sunucuyu bağla'
+                        : 'Sunucu bağlantısını düzenle')),
+                const SizedBox(height: 10),
+                FilledButton.icon(
+                    key: const ValueKey('verify-live-account'),
+                    onPressed: widget.c.checkingBackend ||
+                            widget.c.starting ||
+                            widget.c.engine.running
+                        ? null
+                        : () async {
+                            final result = await widget.c.verifyLiveAccount();
+                            widget.onMessage(result ??
+                                'Hesap doğrulandı. Gerçek emir gönderilmedi.');
+                          },
+                    icon: const Icon(Icons.fact_check_outlined),
+                    label: Text(widget.c.checkingBackend
+                        ? 'Hesap kontrol ediliyor…'
+                        : 'Hesabı doğrula · Emir göndermez')),
+                if (widget.c.backendCheckError.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  Text(widget.c.backendCheckError,
+                      style: const TextStyle(color: loss, fontSize: 12)),
+                ],
+                if (widget.c.backendCheck != null) ...[
+                  const SizedBox(height: 16),
+                  Text(
+                      widget.c.backendCheck!.isFresh(DateTime.now())
+                          ? 'Hesap doğrulandı · Salt okuma'
+                          : 'Hesap kontrolü eskidi · Yenileyin',
+                      style: const TextStyle(
+                          color: mint, fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 8),
+                  Text(
+                      '${widget.c.backendCheck!.symbol.replaceAll('_', '/')} · Kullanılabilir: ${money(widget.c.backendCheck!.availableTry)}\n'
+                      'TRY komisyonu: ${widget.c.backendCheck!.feePct.toStringAsFixed(3)}% · Spread: ${widget.c.backendCheck!.spreadPct.toStringAsFixed(3)}%\n'
+                      'Açık emir: ${widget.c.backendCheck!.reconciliation['openOrderCount']} · Belirsiz bot emri: ${widget.c.backendCheck!.reconciliation['unresolvedIntentCount']}\n'
+                      'Sunucu sermaye sınırı: ${money(number(widget.c.backendCheck!.limits['maxCapital']))}\n'
+                      'Son kontrol: ${DateFormat('HH:mm:ss').format(widget.c.backendCheck!.verifiedAt.toLocal())}',
+                      style: const TextStyle(
+                          color: muted, fontSize: 12, height: 1.7)),
+                  const SizedBox(height: 10),
+                  Text(
+                      widget.c.backendCheck!.liveEnabled
+                          ? 'Sunucu gerçek emirlere izin verebilir. Bot ve canlı mod ayrıca başlatılır.'
+                          : 'Gerçek emirler sunucuda kapalı. Hesabı bağlamak botu başlatmaz.',
+                      style: TextStyle(
+                          color:
+                              widget.c.backendCheck!.liveEnabled ? loss : mint,
+                          fontSize: 12)),
+                  if (!widget.c.backendCheck!.safe)
+                    const Text(
+                        'Açık/belirsiz emir veya bakiye uyuşmazlığı nedeniyle canlı başlangıç engellenir.',
+                        style: TextStyle(color: loss, fontSize: 12)),
+                  const SizedBox(height: 8),
+                  const Text(
+                      'Anahtar yetkileri bu kontrolle kanıtlanamaz; Binance TR panelinden doğrulayın.',
+                      style: TextStyle(color: muted, fontSize: 11)),
+                ],
               ])),
           Panel(
               child: Column(
@@ -1201,11 +1305,6 @@ class _SettingsPageState extends State<SettingsPage> {
               icon: const Icon(Icons.check_rounded),
               label: const Text('Ayarları kaydet')),
           const SizedBox(height: 18),
-          OutlinedButton.icon(
-              onPressed: backend,
-              icon: const Icon(Icons.shield_outlined),
-              label: const Text('Güvenli backend bağlantısı')),
-          const SizedBox(height: 10),
           TextButton(
               onPressed: () async {
                 if (!await confirm(context, 'Paper hesabı sıfırla',
@@ -1220,7 +1319,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   style: TextStyle(color: loss))),
           const SizedBox(height: 12),
           const Text(
-              'CryptoLoop TR 1.0 · Spot\nCanlı mod her açılışta kullanıcı onayı gerektirir.',
+              'CryptoLoop TR 1.1.1 · Spot\nCanlı mod her açılışta kullanıcı onayı gerektirir.',
               textAlign: TextAlign.center,
               style: TextStyle(color: muted, fontSize: 10, height: 1.6)),
         ]));

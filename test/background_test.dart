@@ -6,6 +6,7 @@ import 'package:cryptoloop_tr/live_execution.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'fixtures/live_preflight.dart';
 
 const channel = MethodChannel('cryptoloop/bot_service');
 
@@ -27,6 +28,9 @@ class DeferredBackend extends BackendClient {
   @override
   Future<Map<String, dynamic>> reconcile(String symbol) async =>
       {'safe': true, 'availableTry': 10000};
+  @override
+  Future<LivePreflight> preflight(String symbol) async =>
+      LivePreflight.fromJson(preflightJson(liveEnabled: true));
   @override
   Future<void> arm(StrategySettings settings) async {
     armed.complete();

@@ -1,0 +1,25 @@
+[Unit]
+Description=CryptoLoop TR secure spot bridge
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=cryptoloop
+Group=cryptoloop
+WorkingDirectory=/opt/cryptoloop/backend
+Environment=CRYPTOLOOP_CONFIG=/etc/cryptoloop/bot.env
+ExecStart=/usr/bin/python3 /opt/cryptoloop/backend/server.py
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/cryptoloop
+MemoryMax=256M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

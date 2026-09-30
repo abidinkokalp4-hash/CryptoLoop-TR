@@ -6,6 +6,7 @@ from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit, parse_qs
 from binance_tr import ApiError, BinanceTrClient
+from config import load_config, live_settings
 from service import BotService
 
 class Handler(BaseHTTPRequestHandler):
@@ -31,6 +32,7 @@ class Handler(BaseHTTPRequestHandler):
             service = self.server.service
             if method == 'GET':
                 if path.path == '/v1/health': result = service.health()
+                elif path.path == '/v1/preflight': result = service.preflight(symbol)
                 elif path.path == '/v1/reconcile': result = service.reconcile(symbol)
                 elif path.path == '/v1/orders':
                     kind = {'open': 1, 'history': 2, 'all': -1}.get(query.get('kind', ['all'])[0], -1)
@@ -49,6 +51,7 @@ class Handler(BaseHTTPRequestHandler):
                 elif path.path == '/v1/halt': result = service.halt()
                 elif path.path == '/v1/execute': result = service.execute(body)
                 elif path.path == '/v1/cancel':
+                    if not service.enabled: raise ApiError('Salt okuma kurulumunda emir iptali kapalı.', status=403)
                     with service.lock:
                         row = service.db.execute('SELECT * FROM intents WHERE id=?', (body.get('intentId'),)).fetchone()
                         if row is None: raise ApiError('Bota ait emir bulunamadı.')
@@ -73,14 +76,14 @@ class Server(ThreadingHTTPServer):
         super().__init__(address, Handler)
 
 if __name__ == '__main__':
-    token = os.environ.get('CRYPTOLOOP_CONTROL_TOKEN', '')
-    database = os.environ.get('CRYPTOLOOP_DB', 'data/bot.sqlite3')
+    os.umask(0o077)
+    config = load_config()
+    token = config.get('CRYPTOLOOP_CONTROL_TOKEN', '')
+    if len(token) < 32: raise SystemExit('Sunucu erişim anahtarı eksik veya kısa.')
+    settings = live_settings(config)
+    database = config.get('CRYPTOLOOP_DB', 'data/bot.sqlite3')
     Path(database).parent.mkdir(parents=True, exist_ok=True)
-    client = BinanceTrClient(os.environ.get('BINANCE_TR_API_KEY', ''), os.environ.get('BINANCE_TR_API_SECRET', ''))
-    service = BotService(client, database, enabled=os.environ.get('CRYPTOLOOP_LIVE_ENABLED') == 'true',
-        max_capital=os.environ.get('CRYPTOLOOP_MAX_CAPITAL_TRY', '10000'),
-        max_position=os.environ.get('CRYPTOLOOP_MAX_POSITION_TRY', '2000'),
-        daily_loss=os.environ.get('CRYPTOLOOP_DAILY_LOSS_TRY', '300'),
-        max_entries=int(os.environ.get('CRYPTOLOOP_MAX_ENTRIES', '20')))
+    client = BinanceTrClient(config.get('BINANCE_TR_API_KEY', ''), config.get('BINANCE_TR_API_SECRET', ''))
+    service = BotService(client, database, **settings)
     os.chmod(database, 0o600)
-    Server((os.environ.get('CRYPTOLOOP_BIND', '127.0.0.1'), int(os.environ.get('CRYPTOLOOP_PORT', '8080'))), service, token).serve_forever()
+    Server((config.get('CRYPTOLOOP_BIND', '127.0.0.1'), int(config.get('CRYPTOLOOP_PORT', '8080'))), service, token).serve_forever()

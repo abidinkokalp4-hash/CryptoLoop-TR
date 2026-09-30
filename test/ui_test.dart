@@ -8,6 +8,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:cryptoloop_tr/app_controller.dart';
 import 'package:cryptoloop_tr/main.dart';
 import 'package:cryptoloop_tr/models.dart';
+import 'package:http/http.dart' as http;
+import 'fixtures/live_preflight.dart';
 
 Future<AppController> fixture() async {
   SharedPreferences.setMockInitialValues({});
@@ -128,6 +130,75 @@ void main() {
           .writeAsBytes(bytes!.buffer.asUint8List());
       image.dispose();
     });
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+    await tester.binding.setSurfaceSize(null);
+  });
+  testWidgets('read-only connection shows account without activating live',
+      (tester) async {
+    await tester.binding.setSurfaceSize(const Size(393, 852));
+    final c = await fixture();
+    final requests = <http.Request>[];
+    c.backend = readOnlyBackend(requests);
+    await tester.pumpWidget(CryptoLoopApp(controller: c));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Ayarlar'));
+    await tester.pumpAndSettle();
+    final button = find.byKey(const ValueKey('verify-live-account'));
+    await tester.ensureVisible(button);
+    await tester.tap(button);
+    await tester.pumpAndSettle();
+    expect(find.text('Hesap doğrulandı · Salt okuma'), findsOneWidget);
+    expect(c.backendCheck!.availableTry, 1000);
+    expect(c.live, isFalse);
+    expect(c.engine.running, isFalse);
+    expect(requests.every((r) => r.method == 'GET'), isTrue);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+    await tester.binding.setSurfaceSize(null);
+  });
+  testWidgets('account setup screenshot and disabled live approval',
+      (tester) async {
+    await tester.binding.setSurfaceSize(const Size(412, 915));
+    final c = await fixture();
+    c.backend = readOnlyBackend([]);
+    const key = ValueKey('live-setup-capture');
+    await tester.pumpWidget(
+        RepaintBoundary(key: key, child: CryptoLoopApp(controller: c)));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Ayarlar'));
+    await tester.pumpAndSettle();
+    final button = find.byKey(const ValueKey('verify-live-account'));
+    await tester.ensureVisible(button);
+    await tester.tap(button);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Binance TR hesap bağlantısı'));
+    await tester.pumpAndSettle();
+    final boundary =
+        tester.renderObject<RenderRepaintBoundary>(find.byKey(key));
+    await tester.runAsync(() async {
+      final image = await boundary.toImage(pixelRatio: 2);
+      final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+      await Directory('build/qa').create(recursive: true);
+      await File('build/qa/live-setup.png')
+          .writeAsBytes(bytes!.buffer.asUint8List());
+      image.dispose();
+    });
+    await tester.drag(find.byType(ListView), const Offset(0, 1000));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Canlı'));
+    await tester.tap(find.text('Canlı'));
+    await tester.pumpAndSettle();
+    expect(find.text('Gerçek spot işlem'), findsOneWidget);
+    final approval = tester.widget<FilledButton>(
+        find.widgetWithText(FilledButton, 'Canlı modu aç'));
+    expect(approval.onPressed, isNull);
+    expect(find.textContaining('Ekran kilitlenince bot durur'), findsOneWidget);
+    expect(c.live, isFalse);
+    expect(tester.takeException(), isNull);
+    await tester.tap(find.text('Vazgeç'));
+    await tester.pumpAndSettle();
     await tester.pumpWidget(const SizedBox());
     c.dispose();
     await tester.binding.setSurfaceSize(null);

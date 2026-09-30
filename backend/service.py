@@ -52,7 +52,8 @@ class BotService:
 
     def health(self):
         return {'spotOnly': True, 'liveEnabled': self.enabled, 'armed': self.armed,
-                'credentialsConfigured': bool(self.client._key and self.client._secret)}
+                'credentialsConfigured': bool(self.client._key and self.client._secret),
+                'readOnlyPreflight': True}
     def _rows(self):
         return self.db.execute('SELECT * FROM intents ORDER BY created, rowid').fetchall()
     def _positions(self):
@@ -141,20 +142,50 @@ class BotService:
             if not re.fullmatch(r'[A-Z0-9]+_TRY', symbol): raise ApiError('Geçersiz TRY spot çifti.')
             self.client.sync_time(); self._resolve()
             account = self.client.account(); self._fee(account)
-            positions, realized, daily_pnl, entries = self._positions()
-            assets = self._assets(account); p = positions.get(symbol)
             open_orders = self.client.orders(symbol, 1)
-            base = symbol.split('_')[0]
-            safe = not self._unknown() and not open_orders and (
-                p is None or assets.get(base, D(0)) + D('0.000000000001') >= p['quantity'])
-            result = None
-            if p and p['quantity'] > 0:
-                result = {'symbol': symbol, 'quantity': fmt(p['quantity']), 'entryPrice': fmt(p['notional'] / p['quantity']),
-                    'notional': fmt(p['notional']), 'buyFee': fmt(p['buyFee']), 'openedAt': p['openedAt'], 'orderId': p['orderId']}
-            events, last_sell, last_time = self.history(symbol)
-            return {'events': events, 'lastSellPrice': fmt(last_sell), 'lastSellTime': last_time, 'safe': safe, 'availableTry': fmt(assets.get('TRY', D(0))), 'position': result,
-                'realizedPnl': fmt(realized), 'dailyPnl': fmt(daily_pnl), 'dailyEntries': entries,
-                'riskLocked': self._risk_locked(), 'feePct': fmt(self.fee_ceiling * 100), 'accountFeePct': fmt(self._fee(account) * 100)}
+            return self._reconcile_snapshot(symbol, account, open_orders)
+    def _reconcile_snapshot(self, symbol, account, open_orders):
+        positions, realized, daily_pnl, entries = self._positions()
+        assets = self._assets(account); p = positions.get(symbol)
+        base = symbol.split('_')[0]
+        safe = not self._unknown() and not open_orders and (
+            p is None or assets.get(base, D(0)) + D('0.000000000001') >= p['quantity'])
+        result = None
+        if p and p['quantity'] > 0:
+            result = {'symbol': symbol, 'quantity': fmt(p['quantity']), 'entryPrice': fmt(p['notional'] / p['quantity']),
+                'notional': fmt(p['notional']), 'buyFee': fmt(p['buyFee']), 'openedAt': p['openedAt'], 'orderId': p['orderId']}
+        events, last_sell, last_time = self.history(symbol)
+        return {'events': events, 'lastSellPrice': fmt(last_sell), 'lastSellTime': last_time, 'safe': safe, 'availableTry': fmt(assets.get('TRY', D(0))), 'position': result,
+            'realizedPnl': fmt(realized), 'dailyPnl': fmt(daily_pnl), 'dailyEntries': entries,
+            'riskLocked': self._risk_locked(), 'feePct': fmt(self.fee_ceiling * 100), 'accountFeePct': fmt(self._fee(account) * 100)}
+    def preflight(self, symbol):
+        """Only exchange GET requests. Never arm, cancel, or place an order.
+
+        canTrade describes the account, not this key's permissions. Withdrawal
+        permissions cannot be verified from the account response.
+        """
+        with self.lock:
+            self.client.sync_time(); self._rules(symbol)
+            book = self.client.book(symbol)
+            bid, ask = dec(book['bids'][0][0]), dec(book['asks'][0][0])
+            if not D(0) < bid <= ask: raise ApiError('Emir defteri doğrulanamadı.')
+            account = self.client.account(); fee = self._fee(account)
+            open_orders = self.client.orders(symbol, 1)
+            history = self.client.orders(symbol, 2)
+            trades = self.client.trades(symbol)
+            self._resolve()
+            snapshot = self._reconcile_snapshot(symbol, account, open_orders)
+            return {'readOnly': True, 'symbol': symbol, 'verifiedAt': utc_iso(self.clock()),
+                'liveEnabled': self.enabled, 'armed': self.armed,
+                'market': {'bid': fmt(bid), 'ask': fmt(ask), 'spreadPct': fmt((ask - bid) / ((ask + bid) / 2) * 100)},
+                'account': {'availableTry': snapshot['availableTry'], 'feePct': fmt(fee * 100),
+                    'canTrade': int(account.get('canTrade', 0)) == 1},
+                'reconciliation': {'safe': snapshot['safe'], 'riskLocked': snapshot['riskLocked'],
+                    'openOrderCount': len(open_orders), 'unresolvedIntentCount': self._unknown(),
+                    'historyCount': len(history), 'tradeCount': len(trades), 'position': snapshot['position']},
+                'serverLimits': {'maxCapital': fmt(self.max_capital), 'maxPosition': fmt(self.max_position),
+                    'dailyLossLimit': fmt(self.daily_loss), 'maxTradesPerDay': self.max_entries},
+                'keyPermissionsVerified': False, 'withdrawalPermissionVerified': False}
     def arm(self, body):
         with self.lock:
             if not self.enabled: raise ApiError('Canlı işlemler sunucuda kapalı. Önce sunucu operatörü etkinleştirmeli.', status=403)

@@ -32,7 +32,9 @@ class FakeClient:
         if self.unknown: raise ApiError('order not found')
         order_id = kwargs.get('order_id') or '1'
         return {'orderId':order_id,'executedQty':'1','status':2}
-    def trades(self, symbol, order_id): return [{'orderId':str(order_id),'qty':'1','quoteQty':str(self.calls[int(order_id)-1].get('price', self.bid if self.calls[int(order_id)-1]['side']==1 else 100)),'commission':'0.0015' if self.fee_asset=='BTC' else '0.15', 'commissionAsset':self.fee_asset}]
+    def trades(self, symbol, order_id=None):
+        if not order_id: return []
+        return [{'orderId':str(order_id),'qty':'1','quoteQty':str(self.calls[int(order_id)-1].get('price', self.bid if self.calls[int(order_id)-1]['side']==1 else 100)),'commission':'0.0015' if self.fee_asset=='BTC' else '0.15', 'commissionAsset':self.fee_asset}]
     def cancel(self, **kwargs): return {'status':3}
     def fee_asset_value(self, asset): return dec(10)
 class BackendTests(unittest.TestCase):

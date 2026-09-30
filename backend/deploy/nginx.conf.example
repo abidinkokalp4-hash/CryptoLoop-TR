@@ -1,0 +1,21 @@
+# Load inside nginx http context. Replace host/certificate paths before use.
+limit_req_zone $binary_remote_addr zone=cryptoloop:10m rate=3r/s;
+
+server {
+    listen 443 ssl;
+    server_name bot.example.com;
+    ssl_certificate /etc/ssl/bot/fullchain.pem;
+    ssl_certificate_key /etc/ssl/bot/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    client_max_body_size 16k;
+    access_log off;
+    location /v1/ {
+        limit_req zone=cryptoloop burst=10 nodelay;
+        limit_req_status 429;
+        proxy_pass http://127.0.0.1:8080;
+        proxy_read_timeout 50s;
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 10s;
+    }
+    location / { return 404; }
+}

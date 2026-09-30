@@ -20,7 +20,7 @@ assert aapt and signer
 signature = subprocess.check_output([str(signer),'verify','--verbose','--print-certs',str(apk)],text=True)
 badging = subprocess.check_output([str(aapt),'dump','badging',str(apk)],text=True)
 assert "package: name='com.example.cryptoloop_tr'" in badging
-assert "versionCode='11'" in badging
+assert "versionCode='12'" in badging
 assert "android.permission.INTERNET" in badging
 for permission in ('FOREGROUND_SERVICE', 'FOREGROUND_SERVICE_SPECIAL_USE', 'POST_NOTIFICATIONS', 'WAKE_LOCK'):
     assert f'android.permission.{permission}' in badging, f'Missing {permission}'

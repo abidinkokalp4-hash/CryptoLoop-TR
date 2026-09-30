@@ -24,6 +24,9 @@ class AppController extends ChangeNotifier {
   late TradingEngine engine;
   AppStore? store;
   BackendClient? backend;
+  LivePreflight? backendCheck;
+  String backendCheckError = '';
+  bool checkingBackend = false;
   final secure = const FlutterSecureStorage(
       aOptions: AndroidOptions(encryptedSharedPreferences: true));
   final List<StreamSubscription<dynamic>> _subscriptions = [];
@@ -166,7 +169,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<String?> start() async {
-    if (starting || engine.running) {
+    if (starting || engine.running || checkingBackend) {
       return 'Bot zaten çalışıyor veya başlatılıyor.';
     }
     if (loadError.isNotEmpty) return loadError;
@@ -186,9 +189,22 @@ class AppController extends ChangeNotifier {
       }
       if (live) {
         try {
+          backendCheck = null;
+          backendCheckError = '';
+          backendCheck = await backend!.preflight(engine.settings.symbol);
+          final problem =
+              backendCheck!.liveProblem(engine.settings, DateTime.now());
+          if (problem != null) return problem;
+          if (epoch != _controlEpoch) {
+            return 'Başlatma iptal edildi; bot kapalı kaldı.';
+          }
           await reconcileLive();
+          if (epoch != _controlEpoch) {
+            return 'Başlatma iptal edildi; bot kapalı kaldı.';
+          }
           await backend!.arm(engine.settings);
         } catch (e) {
+          backendCheckError = e.toString();
           return e.toString();
         }
       } else {
@@ -218,7 +234,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<String?> applySettings(StrategySettings s) async {
-    if (engine.running || engine.busy || starting) {
+    if (engine.running || engine.busy || starting || checkingBackend) {
       return 'Ayar değiştirmek için botu tamamen durdurun.';
     }
     final problem = s.validate();
@@ -245,7 +261,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<String?> resetPaper() async {
-    if (live || engine.running || engine.busy || starting) {
+    if (live || engine.running || engine.busy || starting || checkingBackend) {
       return 'Önce paper modunda botu durdurun.';
     }
     if (engine.position != null) {
@@ -259,37 +275,85 @@ class AppController extends ChangeNotifier {
   }
 
   Future<String?> configureBackend(String url, String token) async {
+    if (live || engine.running || engine.busy || starting || checkingBackend) {
+      return 'Backend değiştirmek için önce botu durdurup paper moduna geçin.';
+    }
+    BackendClient? candidate;
     try {
-      final candidate = BackendClient(baseUrl: url.trim(), token: token.trim());
+      candidate = BackendClient(baseUrl: url.trim(), token: token.trim());
       final health = await candidate.request('/v1/health');
-      if (health['spotOnly'] != true) {
-        candidate.close();
-        return 'Spot backend doğrulanamadı.';
+      if (health['spotOnly'] != true || health['readOnlyPreflight'] != true) {
+        return 'Emir göndermeyen hesap kontrolü destekleyen spot backend gerekli. Sunucuyu güncelleyin.';
       }
+      await secure.write(key: 'backend-bearer', value: token.trim());
+      await store?.preferences.setString('backend-url', url.trim());
       backend?.close();
       backend = candidate;
       backendUrl = url.trim();
-      await secure.write(key: 'backend-bearer', value: token.trim());
-      await store?.preferences.setString('backend-url', backendUrl);
+      backendCheck = null;
+      backendCheckError = '';
       _refresh();
       return null;
     } catch (e) {
       return e.toString();
+    } finally {
+      if (!identical(backend, candidate)) candidate?.close();
+    }
+  }
+
+  Future<void> _loadBackend() async {
+    if (backend != null) return;
+    final token = await secure.read(key: 'backend-bearer');
+    if (backendUrl.isEmpty || token == null) {
+      throw const ExecutionException('Güvenli backend henüz bağlanmadı.');
+    }
+    backend = BackendClient(baseUrl: backendUrl, token: token);
+  }
+
+  Future<String?> verifyLiveAccount() async {
+    if (engine.running || engine.busy || starting || checkingBackend) {
+      return 'Hesap kontrolü için önce botu durdurun.';
+    }
+    checkingBackend = true;
+    backendCheck = null;
+    backendCheckError = '';
+    _refresh();
+    try {
+      await _loadBackend();
+      backendCheck = await backend!.preflight(engine.settings.symbol);
+      if (backendCheck!.symbol != engine.settings.symbol) {
+        backendCheck = null;
+        throw const ExecutionException(
+            'Hesap kontrolü işlem çiftiyle uyuşmuyor.');
+      }
+      return null;
+    } catch (e) {
+      backendCheckError = e.toString();
+      return backendCheckError;
+    } finally {
+      checkingBackend = false;
+      _refresh();
     }
   }
 
   Future<String?> activateLive() async {
-    if (engine.running || engine.busy || starting || engine.position != null) {
+    if (engine.running ||
+        engine.busy ||
+        starting ||
+        checkingBackend ||
+        engine.position != null) {
       return 'Önce botu durdurun ve paper pozisyonu kapatın.';
     }
+    starting = true;
+    final epoch = ++_controlEpoch;
     try {
-      if (backend == null) {
-        final token = await secure.read(key: 'backend-bearer');
-        if (backendUrl.isEmpty || token == null) {
-          return 'Güvenli backend henüz bağlanmadı.';
-        }
-        backend = BackendClient(baseUrl: backendUrl, token: token);
+      await _loadBackend();
+      if (backendCheck == null) {
+        return 'Önce emir göndermeyen hesap kontrolünü çalıştırın.';
       }
+      final problem =
+          backendCheck!.liveProblem(engine.settings, DateTime.now());
+      if (problem != null) return problem;
       await save();
       final s = engine.settings;
       final liveEngine = TradingEngine(
@@ -298,12 +362,16 @@ class AppController extends ChangeNotifier {
           onChange: _refresh);
       final saved = store?.read('live-v2');
       if (saved != null) liveEngine.restore(saved);
+      liveEngine.settings =
+          s; // Use the limits just reviewed, never cached limits.
       final old = engine;
       engine = liveEngine;
       live = true;
       try {
         await reconcileLive();
-        await backend!.arm(engine.settings);
+        if (epoch != _controlEpoch) {
+          throw const ExecutionException('Canlı moda geçiş iptal edildi.');
+        }
       } catch (e) {
         engine = old;
         live = false;
@@ -315,6 +383,9 @@ class AppController extends ChangeNotifier {
       return null;
     } catch (e) {
       return e.toString();
+    } finally {
+      starting = false;
+      _refresh();
     }
   }
 
