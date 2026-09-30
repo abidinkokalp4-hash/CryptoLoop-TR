@@ -31,12 +31,35 @@ class BinanceTrMarket {
   double _last = 0, _bid = 0, _ask = 0, _bidQty = 0, _askQty = 0, _change = 0;
   DateTime? _tradeAt, _bookAt, _blockedUntil;
   String connectionMessage = 'Piyasaya bağlanılıyor';
+  String lastError = '', lastErrorEndpoint = '';
+  DateTime? lastErrorAt, lastQuoteAt, nextRetryAt;
+  Map<String, dynamic> get diagnostics => {
+        'symbol': _symbol,
+        'lastError': lastError,
+        'lastErrorEndpoint': lastErrorEndpoint,
+        'lastErrorAt': lastErrorAt?.toUtc().toIso8601String(),
+        'lastQuoteAt': lastQuoteAt?.toUtc().toIso8601String(),
+        'nextRetryAt': nextRetryAt?.toUtc().toIso8601String(),
+        'status': connectionMessage,
+        'symbolRulesLoaded': symbols.containsKey(_symbol),
+      };
   void _state(String text) {
     connectionMessage = text;
     if (!_closed) status.add(text);
   }
 
   Future<dynamic> _get(Uri uri) async {
+    try {
+      return await _request(uri);
+    } catch (e) {
+      lastError = e.toString();
+      lastErrorEndpoint = '${uri.host}${uri.path}';
+      lastErrorAt = DateTime.now();
+      rethrow;
+    }
+  }
+
+  Future<dynamic> _request(Uri uri) async {
     if (_blockedUntil != null && DateTime.now().isBefore(_blockedUntil!)) {
       throw const MarketException('Borsa hız sınırı: bekleniyor.');
     }
@@ -169,6 +192,7 @@ class BinanceTrMarket {
       return;
     }
     final seconds = math.min(60, 1 << math.min(_attempt++, 6));
+    nextRetryAt = DateTime.now().add(Duration(seconds: seconds));
     _state('Bağlantı yenileniyor · $seconds sn');
     _retry = Timer(Duration(seconds: seconds), () async {
       if (_closed || generation != _generation) return;
@@ -262,6 +286,9 @@ class BinanceTrMarket {
         changePct: _change);
     if (!q.isFresh(DateTime.now())) return;
     _attempt = 0;
+    lastQuoteAt = DateTime.now();
+    lastError = lastErrorEndpoint = '';
+    nextRetryAt = null;
     _state('Canlı piyasa bağlı');
     quotes.add(q);
   }

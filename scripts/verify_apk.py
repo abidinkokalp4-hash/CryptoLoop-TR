@@ -20,10 +20,15 @@ assert aapt and signer
 signature = subprocess.check_output([str(signer),'verify','--verbose','--print-certs',str(apk)],text=True)
 badging = subprocess.check_output([str(aapt),'dump','badging',str(apk)],text=True)
 assert "package: name='com.example.cryptoloop_tr'" in badging
-assert "versionCode='10'" in badging
+assert "versionCode='11'" in badging
 assert "android.permission.INTERNET" in badging
+for permission in ('FOREGROUND_SERVICE', 'FOREGROUND_SERVICE_SPECIAL_USE', 'POST_NOTIFICATIONS', 'WAKE_LOCK'):
+    assert f'android.permission.{permission}' in badging, f'Missing {permission}'
+manifest = subprocess.check_output([str(aapt), 'dump', 'xmltree', str(apk), 'AndroidManifest.xml'], text=True)
+assert '.BotService' in manifest
+assert 'android:foregroundServiceType' in manifest and '0x40000000' in manifest
 report = {'file':apk.name,'bytes':apk.stat().st_size,'sha256':hashlib.sha256(apk.read_bytes()).hexdigest(),
-    'releasePayload':True,'signatureVerified':True,'internetPermission':True,
+    'releasePayload':True,'signatureVerified':True,'internetPermission':True,'paperForegroundService':True,
     'signing':'Android debug certificate for private installation' if 'Android Debug' in signature else 'Configured release certificate'}
 Path('build/qa').mkdir(parents=True,exist_ok=True)
 Path('build/qa/apk-verification.json').write_text(json.dumps(report,indent=2))

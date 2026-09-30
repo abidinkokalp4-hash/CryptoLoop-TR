@@ -36,6 +36,10 @@ void main() {
         client: MockClient((r) async => http.Response('{}', 451)));
     await expectLater(m.loadSymbols(),
         throwsA(predicate((e) => e.toString().contains('451'))));
+    expect(m.diagnostics['lastError'], contains('451'));
+    expect(m.diagnostics['lastErrorEndpoint'],
+        'www.binance.tr/open/v1/common/symbols');
+    expect(m.diagnostics['lastQuoteAt'], isNull);
     await m.close();
   });
   test('official candle endpoint and array data are parsed', () async {

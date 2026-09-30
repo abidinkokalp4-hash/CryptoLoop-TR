@@ -26,6 +26,7 @@ Future<void> main() async {
   final report = await result;
   report['checkedAt'] = DateTime.now().toUtc().toIso8601String();
   report['messages'] = messages;
+  report['diagnostics'] = m.diagnostics;
   await status.cancel();
   await m.close();
   await Directory('build/qa').create(recursive: true);

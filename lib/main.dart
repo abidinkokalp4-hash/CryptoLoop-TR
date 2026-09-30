@@ -305,6 +305,14 @@ class Dashboard extends StatelessWidget {
                                 Text(c.connection,
                                     style: const TextStyle(
                                         fontSize: 11, color: muted)),
+                                if (c.market.lastError.isNotEmpty)
+                                  Text(c.market.lastError,
+                                      style: const TextStyle(
+                                          fontSize: 11, color: loss)),
+                                if (c.market.lastErrorEndpoint.isNotEmpty)
+                                  Text(c.market.lastErrorEndpoint,
+                                      style: const TextStyle(
+                                          fontSize: 10, color: muted)),
                                 const Text(
                                     'Güncel veri gelmeden yeni emir açılmaz.',
                                     style:
@@ -527,16 +535,19 @@ class Dashboard extends StatelessWidget {
                     ]),
                     const SizedBox(height: 17),
                     FilledButton.icon(
-                        onPressed: e.busy
+                        onPressed: e.busy || c.starting
                             ? null
                             : e.running
-                                ? () => e.stop()
+                                ? () => c.stop()
                                 : onStart,
                         icon: Icon(e.running
                             ? Icons.stop_rounded
                             : Icons.play_arrow_rounded),
-                        label: Text(
-                            e.running ? 'Botu tamamen durdur' : 'Botu başlat'),
+                        label: Text(c.starting
+                            ? 'Bot başlatılıyor…'
+                            : e.running
+                                ? 'Botu tamamen durdur'
+                                : 'Botu başlat'),
                         style: FilledButton.styleFrom(
                             minimumSize: const Size(double.infinity, 48))),
                     if (e.running) ...[
@@ -559,7 +570,7 @@ class Dashboard extends StatelessWidget {
                                     style: const TextStyle(fontSize: 11)))),
                         const SizedBox(width: 8),
                         OutlinedButton(
-                            onPressed: () => e.stop(emergency: true),
+                            onPressed: () => c.stop(emergency: true),
                             style:
                                 OutlinedButton.styleFrom(foregroundColor: loss),
                             child: const Text('ACİL DURDUR',
@@ -567,10 +578,17 @@ class Dashboard extends StatelessWidget {
                       ])
                     ],
                     const SizedBox(height: 12),
-                    const Text(
-                        'Bot uygulama açıkken çalışır. Arka plana geçince durur; pozisyon kendiliğinden satılmaz.',
-                        style:
-                            TextStyle(color: muted, fontSize: 10, height: 1.4)),
+                    Text(
+                        c.live
+                            ? 'Canlı bot arka plana geçince durur. Pozisyon kendiliğinden satılmaz; stop loss telefon çalışırken izlenir.'
+                            : c.backgroundRunner.enabled
+                                ? 'Paper bot ekran kilitliyken bildirimle çalışır. Bildirimden durdurabilirsiniz. Android zorla durdurursa otomatik yeniden başlamaz.'
+                                : 'Bot uygulama açıkken çalışır; pozisyon kendiliğinden satılmaz.',
+                        style: const TextStyle(
+                            color: muted, fontSize: 10, height: 1.4)),
+                    if (c.backgroundError.isNotEmpty)
+                      Text(c.backgroundError,
+                          style: const TextStyle(color: loss, fontSize: 11)),
                   ])),
               if (e.position != null)
                 PositionCard(position: e.position!, quote: q, metrics: m),

@@ -3,18 +3,24 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'binance_tr_market.dart';
+import 'bot_background.dart';
 import 'execution.dart';
 import 'live_execution.dart';
 import 'storage.dart';
 import 'trading_engine.dart';
 
 class AppController extends ChangeNotifier {
-  AppController({BinanceTrMarket? market, this.offline = false})
-      : market = market ?? BinanceTrMarket() {
+  AppController(
+      {BinanceTrMarket? market,
+      BotBackground? backgroundRunner,
+      this.offline = false})
+      : market = market ?? BinanceTrMarket(),
+        backgroundRunner = backgroundRunner ?? BotBackground() {
     engine = TradingEngine(onChange: _refresh);
   }
   final BinanceTrMarket market;
   final bool offline;
+  final BotBackground backgroundRunner;
   late TradingEngine engine;
   AppStore? store;
   BackendClient? backend;
@@ -22,22 +28,37 @@ class AppController extends ChangeNotifier {
       aOptions: AndroidOptions(encryptedSharedPreferences: true));
   final List<StreamSubscription<dynamic>> _subscriptions = [];
   final List<Candle> candles = [];
-  Timer? _saveTimer, _freshness;
+  Timer? _saveTimer, _freshness, _notificationTimer;
   String connection = 'Piyasaya bağlanılıyor',
       chartError = '',
       loadError = '',
-      backendUrl = '';
+      backendUrl = '',
+      backgroundError = '';
   String interval = '1m';
   bool initialized = false,
       chartLoading = false,
       live = false,
+      starting = false,
       _disposed = false;
-  int _chartGeneration = 0;
+  int _chartGeneration = 0, _controlEpoch = 0;
   MarketQuote? get quote => engine.quote;
   bool get connected => quote?.isFresh(DateTime.now()) == true;
   List<String> get symbolNames => market.symbols.keys.toList()..sort();
   String get storageKey => live ? 'live-v2' : 'paper-v2';
   void _refresh() {
+    if (!engine.running && !starting && backgroundRunner.active) {
+      unawaited(backgroundRunner.stop().catchError((Object e) {
+        backgroundError = 'Android servisi durdurulamadı: $e';
+      }));
+    } else if (engine.running &&
+        !live &&
+        backgroundRunner.active &&
+        !(_notificationTimer?.isActive ?? false)) {
+      _notificationTimer = Timer(const Duration(seconds: 1), () {
+        unawaited(backgroundRunner.update(engine.settings.symbol,
+            engine.state.label, connected ? 'Piyasa bağlı' : connection));
+      });
+    }
     if (!_disposed) notifyListeners();
   }
 
@@ -52,6 +73,15 @@ class AppController extends ChangeNotifier {
       loadError = e.toString();
     }
     engine.persist = save;
+    backgroundRunner.isPaperRunning = () => !live && engine.running;
+    backgroundRunner.onStop = (reason) async {
+      if (!engine.running && !starting) return;
+      await stop(emergency: true);
+      engine.message = reason;
+      await save();
+      _refresh();
+    };
+    backgroundRunner.init();
     initialized = true;
     _refresh();
     if (offline) {
@@ -136,33 +166,59 @@ class AppController extends ChangeNotifier {
   }
 
   Future<String?> start() async {
+    if (starting || engine.running) {
+      return 'Bot zaten çalışıyor veya başlatılıyor.';
+    }
     if (loadError.isNotEmpty) return loadError;
     if (!connected) {
       return 'Güncel piyasa verisi yok. Bağlantı kurulunca yeniden deneyin.';
     }
-    if (market.symbols[engine.settings.symbol] == null) {
-      try {
-        await market.loadSymbols();
-      } catch (e) {
-        return e.toString();
-      }
-    }
-    if (live) {
-      try {
-        await reconcileLive();
-        await backend!.arm(engine.settings);
-      } catch (e) {
-        return e.toString();
-      }
-    }
-    engine.start();
-    await save();
+    starting = true;
+    final epoch = ++_controlEpoch;
     _refresh();
-    return null;
+    try {
+      if (market.symbols[engine.settings.symbol] == null) {
+        try {
+          await market.loadSymbols();
+        } catch (e) {
+          return e.toString();
+        }
+      }
+      if (live) {
+        try {
+          await reconcileLive();
+          await backend!.arm(engine.settings);
+        } catch (e) {
+          return e.toString();
+        }
+      } else {
+        backgroundError = await backgroundRunner.start() ?? '';
+        if (backgroundError.isNotEmpty) return backgroundError;
+      }
+      if (epoch != _controlEpoch || _disposed || !connected) {
+        if (live) await engine.stop(emergency: true);
+        await backgroundRunner.stop();
+        return 'Başlatma iptal edildi veya fiyat eskidi. Bot kapalı kaldı.';
+      }
+      engine.start();
+      await save();
+      _refresh();
+      return engine.running ? null : engine.message;
+    } finally {
+      starting = false;
+      _refresh();
+    }
+  }
+
+  Future<void> stop({bool emergency = false}) async {
+    ++_controlEpoch;
+    await engine.stop(emergency: emergency);
+    await backgroundRunner.stop();
+    _refresh();
   }
 
   Future<String?> applySettings(StrategySettings s) async {
-    if (engine.running || engine.busy) {
+    if (engine.running || engine.busy || starting) {
       return 'Ayar değiştirmek için botu tamamen durdurun.';
     }
     final problem = s.validate();
@@ -189,7 +245,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<String?> resetPaper() async {
-    if (live || engine.running || engine.busy) {
+    if (live || engine.running || engine.busy || starting) {
       return 'Önce paper modunda botu durdurun.';
     }
     if (engine.position != null) {
@@ -223,7 +279,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<String?> activateLive() async {
-    if (engine.running || engine.busy || engine.position != null) {
+    if (engine.running || engine.busy || starting || engine.position != null) {
       return 'Önce botu durdurun ve paper pozisyonu kapatın.';
     }
     try {
@@ -295,7 +351,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<String?> activatePaper() async {
-    if (engine.running || engine.busy) return 'Önce botu durdurun.';
+    if (engine.running || engine.busy || starting) return 'Önce botu durdurun.';
     if (live && engine.position != null) {
       return 'Canlı pozisyon varken mod değiştirilemez.';
     }
@@ -313,8 +369,13 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> background() async {
-    if (engine.running) {
-      await engine.stop();
+    if (!live && engine.running && backgroundRunner.active) {
+      await save();
+      return;
+    }
+    ++_controlEpoch;
+    if (engine.running || starting) {
+      await stop();
       engine.message =
           'Uygulama arka plana geçti; bot güvenli şekilde durdu. Devam etmek için başlatın.';
     }
@@ -327,6 +388,8 @@ class AppController extends ChangeNotifier {
     _disposed = true;
     _saveTimer?.cancel();
     _freshness?.cancel();
+    _notificationTimer?.cancel();
+    unawaited(stop().whenComplete(backgroundRunner.dispose));
     for (final s in _subscriptions) {
       unawaited(s.cancel());
     }

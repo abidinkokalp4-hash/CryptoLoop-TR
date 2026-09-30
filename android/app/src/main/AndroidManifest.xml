@@ -1,11 +1,24 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <application
         android:label="CryptoLoop TR"
         android:allowBackup="false"
         android:usesCleartextTraffic="false"
         android:name="${applicationName}"
         android:icon="@drawable/ic_cryptoloop">
+        <service
+            android:name=".BotService"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-started continuous spot paper trading strategy using live market quotes, with an ongoing notification and immediate stop action. No automatic start or real money execution." />
+        </service>
         <activity
             android:name=".MainActivity"
             android:exported="true"
