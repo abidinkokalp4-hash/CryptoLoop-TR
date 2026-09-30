@@ -188,6 +188,7 @@ class BotService:
                 'keyPermissionsVerified': False, 'withdrawalPermissionVerified': False}
     def arm(self, body):
         with self.lock:
+            self.armed = False; self.settings = None
             if not self.enabled: raise ApiError('Canlı işlemler sunucuda kapalı. Önce sunucu operatörü etkinleştirmeli.', status=403)
             if body.get('confirmation') != 'CANLI SPOT ISLEM ONAYI': raise ApiError('Açık kullanıcı onayı gerekli.', status=403)
             s = body.get('settings', {})
@@ -202,6 +203,11 @@ class BotService:
             reconciled = self.reconcile(s['symbol'])
             if not reconciled['safe']: raise ApiError('Açık/belirsiz emir veya miktar uyuşmazlığı var.', uncertain=True)
             positions, *_ = self._positions()
+            capital = min(dec(s['maxCapital']), self.max_capital)
+            position_limit = min(dec(s['maxPosition']), self.max_position)
+            if sum((p['basis'] for p in positions.values() if p['quantity'] > 0), D(0)) > capital or any(
+                    p['quantity'] > 0 and p['basis'] > position_limit for p in positions.values()):
+                raise ApiError('Mevcut bot pozisyonu yeni sermaye/pozisyon sınırını aşıyor. Önce hesabı kontrol edin.')
             if any(p['quantity'] > 0 and sym != s['symbol'] for sym, p in positions.items()):
                 raise ApiError('Başka çiftte bot pozisyonu açık; çift değiştirilemez.')
             self._rules(s['symbol']); self.settings = s; self.armed = True

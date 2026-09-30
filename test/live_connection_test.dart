@@ -86,6 +86,26 @@ void main() {
             .liveProblem(const StrategySettings(), now),
         isNotNull);
   });
+  test('existing position cost including buy fee must fit the reviewed cap',
+      () {
+    final now = DateTime.utc(2026, 9, 30);
+    final j = preflightJson(liveEnabled: true, time: now);
+    (j['reconciliation'] as Map)['position'] = {
+      'symbol': 'BTC_TRY',
+      'quantity': '1',
+      'notional': '100',
+      'buyFee': '0.15'
+    };
+    final settings = const StrategySettings(maxCapital: 100, maxPosition: 100);
+    expect(LivePreflight.fromJson(j, now: now).liveProblem(settings, now),
+        contains('pozisyonu'));
+    ((j['reconciliation'] as Map)['position'] as Map)['buyFee'] = '0';
+    expect(
+        LivePreflight.fromJson(j, now: now).liveProblem(settings, now), isNull);
+    ((j['reconciliation'] as Map)['position'] as Map)['buyFee'] = 'NaN';
+    expect(() => LivePreflight.fromJson(j, now: now),
+        throwsA(isA<ExecutionException>()));
+  });
   group('account connection controller', () {
     late AppController c;
     late List<http.Request> requests;

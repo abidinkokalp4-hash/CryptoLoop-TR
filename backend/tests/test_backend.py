@@ -62,6 +62,15 @@ class BackendTests(unittest.TestCase):
         with self.assertRaises(ApiError): self.service.execute(self.body())
     def test_explicit_arm_confirmation_required(self):
         with self.assertRaises(ApiError): self.service.arm({'confirmation':'yes','settings':SETTINGS})
+        self.assertFalse(self.service.armed)
+        self.assertIsNone(self.service.settings)
+    def test_existing_position_over_lowered_cap_blocks_restart(self):
+        self.service.execute(self.body())
+        with self.assertRaises(ApiError):
+            self.service.arm({'confirmation':'CANLI SPOT ISLEM ONAYI',
+                'settings':dict(SETTINGS, maxCapital=100, maxPosition=100)})
+        self.assertFalse(self.service.armed)
+        self.assertEqual(len(self.client.calls), 1)
     def test_server_cap_cannot_be_increased_from_mobile(self):
         with self.assertRaises(ApiError): self.service.arm({'confirmation':'CANLI SPOT ISLEM ONAYI','settings':dict(SETTINGS,maxCapital=2000)})
     def test_buy_budget_cannot_exceed_cap(self):

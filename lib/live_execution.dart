@@ -68,6 +68,17 @@ class LivePreflight {
         number(limits['maxTradesPerDay']) % 1 != 0) {
       throw const ExecutionException('Hesap kontrol yanıtı doğrulanamadı.');
     }
+    final position = rec['position'];
+    if (position != null &&
+        (position is! Map<String, dynamic> ||
+            position['symbol'] != j['symbol'] ||
+            !['quantity', 'notional', 'buyFee']
+                .every((k) => validNumber(position[k])) ||
+            number(position['quantity']) <= 0 ||
+            number(position['notional']) <= 0)) {
+      throw const ExecutionException(
+          'Bot pozisyonu kontrol yanıtı doğrulanamadı.');
+    }
     return LivePreflight._(j, verified, received);
   }
 
@@ -91,6 +102,13 @@ class LivePreflight {
         settings.dailyLossLimit > number(limits['dailyLossLimit']) ||
         settings.maxTradesPerDay > number(limits['maxTradesPerDay'])) {
       return 'Uygulamadaki sermaye/günlük limitler sunucu sınırlarını aşıyor. Ayarları eşitleyin.';
+    }
+    final position = reconciliation['position'] as Map<String, dynamic>?;
+    if (position != null) {
+      final basis = number(position['notional']) + number(position['buyFee']);
+      if (basis > settings.maxCapital || basis > settings.maxPosition) {
+        return 'Mevcut bot pozisyonu yeni sermaye/pozisyon sınırını aşıyor. Önce hesabı kontrol edin.';
+      }
     }
     return null;
   }

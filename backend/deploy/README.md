@@ -54,6 +54,8 @@ Operatör yalnızca sunucunun özel `bot.env` dosyasında dört limiti pozitif, 
 
 Telefonda ayarlar sunucu sınırlarını aşmamalıdır. Yeniden hesap kontrolü, iki ayrı canlı onay kutusu ve ardından **Botu başlat** gerekir. Canlı modu açmak tek başına arm/emir göndermez. İlk gerçek deneme emri de ayrıca kullanıcı tarafından başlatılmalıdır; gerçekleşme, gerçek komisyon ve reconcile sonucunu kontrol edin. Kâr garantisi yoktur.
 
+Eski açık bot pozisyonunun komisyon dahil maliyeti yeni azaltılmış sermaye/pozisyon limitini aşıyorsa yeniden başlatma reddedilir. Limit reddi/başarısız arm önceki canlı yetkilendirmeyi açık bırakmaz. Mevcut pozisyon otomatik satılmaz; kullanıcı hesabı kontrol etmelidir.
+
 **Çalışma sınırı:** canlı strateji hâlen telefondadır. Ekran kilitlenince/arka plana geçince durur; açık spot pozisyon borsada kalır ve telefonun stop loss kontrolü çalışmaz. Kesintisiz gerçek para yönetimi için sunucuda bağımsız strateji/risk zamanlayıcısı ayrıca geliştirilip test edilmelidir. Bu köprü tek başına 24/7 canlı bot değildir.
 
 Kaynak: [Binance TR resmi API](https://www.binance.tr/apidocs/), 30.09.2026.
