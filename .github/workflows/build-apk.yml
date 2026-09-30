@@ -84,6 +84,9 @@ jobs:
         run: |
           flutter pub get
           flutter build apk --debug -t integration_test/background_test.dart --target-platform android-x64
+      - name: Release compiler resources before emulator
+        working-directory: android
+        run: ./gradlew --stop
       - name: Native foreground lifecycle and release launch checks
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -91,17 +94,19 @@ jobs:
           arch: x86_64
           target: google_apis
           profile: pixel_6
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          ram-size: 2048M
+          heap-size: 256M
+          cores: 2
+          emulator-options: -no-window -gpu swiftshader_indirect -feature -Vulkan -no-snapshot -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           script: |
             adb install -r -g build/app/outputs/flutter-apk/app-debug.apk
-            python3 scripts/run_device_tests.py
-            python3 scripts/device_release_smoke.py build/ci-release/app-release.apk
+            python3 scripts/device_checks.py build/ci-release/app-release.apk
       - name: Collect emulator diagnostics
         if: always()
         run: |
           mkdir -p build/qa/device
-          timeout 10s adb logcat -d > build/qa/device/emulator-logcat.txt || true
+          timeout 10s adb logcat -d > build/qa/device/emulator-post-action-logcat.txt || true
       - name: Upload Android verification
         if: always()
         uses: actions/upload-artifact@v4
