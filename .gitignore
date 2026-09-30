@@ -5,3 +5,11 @@ build/
 *.jks
 key.properties
 android/local.properties
+
+.idea/
+*.iml
+.flutter-plugins*
+__pycache__/
+*.pyc
+backend/data/
+*.sqlite3

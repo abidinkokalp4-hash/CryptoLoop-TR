@@ -1,13 +1,17 @@
 name: cryptoloop_tr
-description: Binance TR paper trading prototype
+description: Binance TR spot strategy and paper trading
 publish_to: "none"
-version: 0.1.0+1
+version: 1.0.0+10
 environment:
   sdk: ">=3.3.0 <4.0.0"
 dependencies:
   flutter:
     sdk: flutter
   web_socket_channel: ^3.0.1
+  http: ^1.2.2
+  shared_preferences: ^2.3.3
+  flutter_secure_storage: ^9.2.2
+  intl: ^0.20.2
 dev_dependencies:
   flutter_test:
     sdk: flutter
