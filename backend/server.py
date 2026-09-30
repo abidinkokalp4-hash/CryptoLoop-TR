@@ -29,11 +29,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             path = urlsplit(self.path); query = parse_qs(path.query)
             symbol = query.get('symbol', ['BTC_TRY'])[0]
+            symbols = query['symbols'][0].split(',') if 'symbols' in query else None
             service = self.server.service
             if method == 'GET':
                 if path.path == '/v1/health': result = service.health()
-                elif path.path == '/v1/preflight': result = service.preflight(symbol)
-                elif path.path == '/v1/reconcile': result = service.reconcile(symbol)
+                elif path.path == '/v1/preflight': result = service.preflight_many(symbols) if symbols is not None else service.preflight(symbol)
+                elif path.path == '/v1/reconcile': result = service.reconcile_many(symbols) if symbols is not None else service.reconcile(symbol)
                 elif path.path == '/v1/orders':
                     kind = {'open': 1, 'history': 2, 'all': -1}.get(query.get('kind', ['all'])[0], -1)
                     service._rules(symbol); result = {'orders': service.client.orders(symbol, kind)}

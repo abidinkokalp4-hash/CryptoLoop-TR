@@ -31,9 +31,10 @@ try:
                 print("Emulator screen locked; paper engine must continue.", flush=True)
         assert run.wait(timeout=10) == 0, "Native paper test failed"
     assert locked, "Screen lock marker was not observed"
+    assert any("CRYPTOLOOP_TEN_COIN_PAPER_EXITS_VERIFIED" in line for line in lines), "Ten coin exits were not verified"
     (out / "background-test.json").write_text(json.dumps({
         "passed": True, "screenLocked": True, "realForegroundService": True,
-        "paperOnly": True, "prices": "test fixture", "seconds": time.monotonic() - started,
+        "paperOnly": True, "simultaneousPositions": 10, "profitablePaperExits": 10, "prices": "test fixture", "seconds": time.monotonic() - started,
     }, indent=2))
 finally:
     (out / "integration-log.txt").write_text("".join(lines))

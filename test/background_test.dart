@@ -62,6 +62,7 @@ void main() {
     runner = BotBackground(enabled: true);
     c = AppController(offline: true, backgroundRunner: runner);
     await c.init();
+    c.engine.settings = const StrategySettings();
     c.market.symbols['BTC_TRY'] = const SymbolRules(symbol: 'BTC_TRY');
     c.engine.quote = MarketQuote(
         symbol: 'BTC_TRY', last: 100, bid: 100, ask: 100, time: DateTime.now());

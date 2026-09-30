@@ -112,6 +112,66 @@ void main() {
     c.dispose();
     await tester.binding.setSurfaceSize(null);
   });
+  testWidgets(
+      'ten coin carousel selects chart without changing positions or capital',
+      (tester) async {
+    await tester.binding.setSurfaceSize(const Size(393, 852));
+    final c = await fixture();
+    c.engine.coin('ETH_TRY').quote = MarketQuote(
+        symbol: 'ETH_TRY',
+        last: 100,
+        bid: 99.9,
+        ask: 100.1,
+        time: DateTime.now());
+    await tester.pumpWidget(CryptoLoopApp(controller: c));
+    await tester.pumpAndSettle();
+    final eth = find.byKey(const ValueKey('watch-ETH_TRY'));
+    await tester.ensureVisible(eth);
+    await tester.tap(eth);
+    await tester.pumpAndSettle();
+    expect(c.selectedSymbol, 'ETH_TRY');
+    expect(c.engine.settings.symbol, 'BTC_TRY');
+    expect(c.engine.position!.orderId, 'P-test');
+    expect(c.engine.settings.symbols, hasLength(10));
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+    await tester.binding.setSurfaceSize(null);
+  });
+  testWidgets(
+      'coin picker supports ten catalog validated pairs on a small phone',
+      (tester) async {
+    await tester.binding.setSurfaceSize(const Size(393, 852));
+    final c = await fixture();
+    for (final s in [
+      ...StrategySettings.defaultWatchlist,
+      'NEAR_TRY',
+      'LTC_TRY'
+    ]) {
+      c.market.symbols[s] = SymbolRules(symbol: s);
+    }
+    await tester.pumpWidget(CryptoLoopApp(controller: c));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Ayarlar'));
+    await tester.pumpAndSettle();
+    final picker = find.byKey(const ValueKey('choose-coins'));
+    await tester.ensureVisible(picker);
+    await tester.pumpAndSettle();
+    await tester.tap(picker);
+    await tester.pumpAndSettle();
+    expect(find.text('İzlenecek coin’ler · 10/20'), findsOneWidget);
+    await tester.tap(find.text('10 coin seç'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Listeyi kullan'));
+    await tester.pumpAndSettle();
+    expect(find.text('10 coin seçili · En fazla 20 TRY spot çift'),
+        findsOneWidget);
+    expect(c.engine.settings.symbols, hasLength(10));
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+    await tester.binding.setSurfaceSize(null);
+  });
   testWidgets('portfolio screenshot for visual QA', (tester) async {
     await tester.binding.setSurfaceSize(const Size(412, 915));
     final c = await fixture();

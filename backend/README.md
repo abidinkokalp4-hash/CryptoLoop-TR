@@ -60,3 +60,11 @@ Testler gerçek ağ veya gerçek anahtar kullanmaz:
 ```sh
 python3 -m unittest discover -s tests -v
 ```
+
+## Çok coin protokolü (1.2.0)
+
+`GET /v1/preflight?symbols=BTC_TRY,ETH_TRY,...` seçili 1–20 çiftin hepsini tek ortak hesap bakiyesiyle salt okuma olarak doğrular. Yanıt `symbols` ve `checks` içerir. Eksik çift veya tutarsız bakiye/limit yanıtı uygulamada reddedilir. `GET /v1/reconcile?symbols=...` ortak bakiyeyi, gerçekleşen K/Z ve günlük alım sayısını yalnızca bir kez; `coins` içinde her çiftin pozisyonunu, son satışını ve yeniden giriş bilgisini döndürür. Tek çift API uyumluluğu korunur.
+
+Arm ayarlarında `symbols` ve `maxOpenPositions` gerekir. Alış bütçesi bütün açık pozisyonların komisyon dahil maliyet bazısından kalan sermaye ile sınırlıdır. Aynı coin’e ikinci açık bot pozisyonu açılmaz. Günlük zarar için diğer pozisyonların güncel bid fiyatları da okunur; hiçbir coin’deki zarar farklı coin’e geçerek aşılamaz. Herhangi bir pozisyon bakiyesi uyuşmazsa/açık emir varsa yeni alım engellenir. Günlük alım ve eşzamanlı pozisyon sayısı ortaktır.
+
+Bu sürüm gerçek hesabı bağlamaz veya canlı modu kendiliğinden açmaz. Canlı stratejinin telefon arka plana geçince durması sınırı devam eder.

@@ -42,13 +42,31 @@ BackendClient readOnlyBackend(List<http.Request> requests,
           if (request.method != 'GET') {
             throw StateError('Unexpected exchange mutation');
           }
+          final symbols = (request.url.queryParameters['symbols'] ??
+                  request.url.queryParameters['symbol'] ??
+                  'BTC_TRY')
+              .split(',');
           if (request.url.path == '/v1/preflight') {
             return http.Response(
-                jsonEncode(preflightJson(liveEnabled: liveEnabled)), 200);
+                jsonEncode(symbols.length == 1
+                    ? (preflightJson(liveEnabled: liveEnabled)
+                      ..['symbol'] = symbols.single)
+                    : portfolioPreflightJson(symbols,
+                        liveEnabled: liveEnabled)),
+                200);
           }
           if (request.url.path == '/v1/reconcile') {
             return http.Response(
                 jsonEncode({
+                  if (symbols.length > 1)
+                    'coins': {
+                      for (final s in symbols)
+                        s: {
+                          'position': null,
+                          'lastSellPrice': '0',
+                          'lastSellTime': null
+                        }
+                    },
                   'safe': true,
                   'availableTry': '1000',
                   'realizedPnl': '0',
@@ -65,3 +83,14 @@ BackendClient readOnlyBackend(List<http.Request> requests,
           }
           throw StateError('Unexpected backend route');
         }));
+
+Map<String, dynamic> portfolioPreflightJson(List<String> symbols,
+        {bool liveEnabled = false, DateTime? time}) =>
+    {
+      'readOnly': true,
+      'symbols': symbols,
+      'checks': [
+        for (final s in symbols)
+          preflightJson(liveEnabled: liveEnabled, time: time)..['symbol'] = s
+      ]
+    };

@@ -248,7 +248,8 @@ class Dashboard extends StatelessWidget {
   final void Function(String?) onMessage;
   @override
   Widget build(BuildContext context) {
-    final e = c.engine, q = c.quote, m = e.metrics;
+    final e = c.engine, q = c.quote, m = e.metricsFor(c.selectedSymbol);
+    final selectedCoin = e.coin(c.selectedSymbol);
     final today = e.dailyPnl;
     return RefreshIndicator(
         onRefresh: c.reconnect,
@@ -265,7 +266,7 @@ class Dashboard extends StatelessWidget {
                 const SizedBox(width: 7),
                 Expanded(
                     child: Text(
-                        c.connected ? 'Piyasa bağlı' : 'Bağlantı bekleniyor',
+                        '${c.connectedCount}/${e.settings.symbols.length} coin bağlı',
                         style: const TextStyle(fontSize: 11, color: muted))),
                 Icon(Icons.smart_toy_outlined,
                     size: 14, color: e.running ? mint : muted),
@@ -285,7 +286,7 @@ class Dashboard extends StatelessWidget {
                 Text('TRY', style: TextStyle(color: muted, fontSize: 12))
               ]),
               const SizedBox(height: 15),
-              if (!c.connected)
+              if (c.connectedCount < e.settings.symbols.length)
                 Panel(
                     padding: 14,
                     child: Row(
@@ -373,21 +374,40 @@ class Dashboard extends StatelessWidget {
                                   'Kullanılabilir TL', money(e.cashTry))),
                           Expanded(
                               child: ValuePair(
-                                  'Kripto değeri',
-                                  money((e.position?.quantity ?? 0) *
-                                      (q?.last ??
-                                          e.position?.entryPrice ??
-                                          0))))
+                                  'Kripto değeri', money(e.cryptoValue)))
+                        ]),
+                        const SizedBox(height: 14),
+                        Row(children: [
+                          Expanded(
+                              child: ValuePair('İzlenen coin',
+                                  '${e.settings.symbols.length} spot çift')),
+                          Expanded(
+                              child: ValuePair('Açık pozisyon',
+                                  '${e.positions.length} / ${e.settings.maxOpenPositions}')),
                         ]),
                         const SizedBox(height: 14),
                         ValuePair('Toplam gerçekleşen K/Z',
                             money(e.realizedPnl, signed: true),
                             color: pnlColor(e.realizedPnl)),
                       ])),
+              CoinWatchPanel(c: c),
               Panel(
                   child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                    DropdownButtonFormField<String>(
+                        key: ValueKey('chart-${c.selectedSymbol}'),
+                        initialValue: c.selectedSymbol,
+                        decoration:
+                            const InputDecoration(labelText: 'Grafik çifti'),
+                        items: e.settings.symbols
+                            .map((s) => DropdownMenuItem(
+                                value: s, child: Text(s.replaceAll('_', '/'))))
+                            .toList(),
+                        onChanged: (s) {
+                          if (s != null) unawaited(c.selectSymbol(s));
+                        }),
+                    const SizedBox(height: 16),
                     Row(children: [
                       Container(
                           width: 36,
@@ -396,13 +416,21 @@ class Dashboard extends StatelessWidget {
                               color: const Color(0xFFF8AE36)
                                   .withValues(alpha: 0.12),
                               borderRadius: BorderRadius.circular(10)),
-                          child: const Icon(Icons.currency_bitcoin_rounded,
-                              color: Color(0xFFF8AE36), size: 26)),
+                          child: Center(
+                              child: Text(
+                                  c.selectedSymbol
+                                      .split('_')
+                                      .first
+                                      .substring(0, 1),
+                                  style: const TextStyle(
+                                      color: Color(0xFFF8AE36),
+                                      fontSize: 22,
+                                      fontWeight: FontWeight.w800)))),
                       const SizedBox(width: 11),
                       Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(e.settings.symbol.replaceAll('_', ' / '),
+                            Text(c.selectedSymbol.replaceAll('_', ' / '),
                                 style: const TextStyle(
                                     fontWeight: FontWeight.w800, fontSize: 15)),
                             const Text('Binance TR · Spot',
@@ -422,7 +450,7 @@ class Dashboard extends StatelessWidget {
                     Text(
                         q == null
                             ? 'Resmi piyasa bağlantısı bekleniyor'
-                            : '24 saatlik değişim · ${c.connected ? 'canlı' : 'son bilinen veri'}',
+                            : '24 saatlik değişim · ${c.chartConnected ? 'canlı' : 'son bilinen veri'}',
                         style: const TextStyle(color: muted, fontSize: 10)),
                     const SizedBox(height: 18),
                     SingleChildScrollView(
@@ -471,7 +499,7 @@ class Dashboard extends StatelessWidget {
                       PriceChart(
                           candles: c.candles,
                           trades: e.events
-                              .where((t) => t.symbol == e.settings.symbol)
+                              .where((t) => t.symbol == c.selectedSymbol)
                               .toList()),
                     const SizedBox(height: 16),
                     const Divider(color: border, height: 1),
@@ -520,10 +548,11 @@ class Dashboard extends StatelessWidget {
                           money(m.requiredBid),
                           color: mint)
                     ],
-                    if (e.lastSellPrice > 0 && e.position == null) ...[
+                    if (selectedCoin.lastSellPrice > 0 &&
+                        selectedCoin.position == null) ...[
                       const SizedBox(height: 15),
                       ValuePair('Yeniden alım için izlenen seviye',
-                          money(e.reentryLevel))
+                          money(e.reentryLevelFor(c.selectedSymbol)))
                     ],
                     const SizedBox(height: 17),
                     Row(children: [
@@ -593,8 +622,11 @@ class Dashboard extends StatelessWidget {
                       Text(c.backgroundError,
                           style: const TextStyle(color: loss, fontSize: 11)),
                   ])),
-              if (e.position != null)
-                PositionCard(position: e.position!, quote: q, metrics: m),
+              for (final p in e.positions.values)
+                PositionCard(
+                    position: p,
+                    quote: e.quoteFor(p.symbol),
+                    metrics: e.metricsFor(p.symbol)),
               Row(children: [
                 const Text('Son işlemler',
                     style:
@@ -615,6 +647,110 @@ class Dashboard extends StatelessWidget {
   }
 }
 
+class CoinWatchPanel extends StatelessWidget {
+  const CoinWatchPanel({super.key, required this.c});
+  final AppController c;
+  @override
+  Widget build(BuildContext context) => Panel(
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          const Icon(Icons.radar, color: mint, size: 20),
+          const SizedBox(width: 8),
+          const Expanded(
+              child: Text('Çok coin taraması',
+                  style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16))),
+          BadgePill('${c.engine.settings.symbols.length} COIN', mint)
+        ]),
+        const SizedBox(height: 8),
+        const Text('Her çift ayrı izlenir · Ortak TL bakiye ve risk sınırı',
+            style: TextStyle(color: muted, fontSize: 11)),
+        const SizedBox(height: 14),
+        SizedBox(
+            height: 132,
+            child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(children: [
+                  for (final symbol in c.engine.settings.symbols)
+                    Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: InkWell(
+                            key: ValueKey('watch-$symbol'),
+                            onTap: () => c.selectSymbol(symbol),
+                            borderRadius: BorderRadius.circular(12),
+                            child: Container(
+                                width: 160,
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                    color: symbol == c.selectedSymbol
+                                        ? mint.withValues(alpha: 0.07)
+                                        : background,
+                                    borderRadius: BorderRadius.circular(12),
+                                    border: Border.all(
+                                        color: symbol == c.selectedSymbol
+                                            ? mint
+                                            : border)),
+                                child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Row(children: [
+                                        Text(symbol.split('_').first,
+                                            style: const TextStyle(
+                                                fontWeight: FontWeight.w800)),
+                                        const Spacer(),
+                                        Icon(
+                                            c.engine.quoteFor(symbol)?.isFresh(
+                                                        DateTime.now()) ==
+                                                    true
+                                                ? Icons.wifi
+                                                : Icons.wifi_off,
+                                            size: 14,
+                                            color: c.engine
+                                                        .quoteFor(symbol)
+                                                        ?.isFresh(
+                                                            DateTime.now()) ==
+                                                    true
+                                                ? mint
+                                                : muted)
+                                      ]),
+                                      const SizedBox(height: 8),
+                                      Text(
+                                          c.engine.quoteFor(symbol) == null
+                                              ? 'Veri bekleniyor'
+                                              : money(c.engine
+                                                  .quoteFor(symbol)!
+                                                  .last),
+                                          style: const TextStyle(
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.w700)),
+                                      const SizedBox(height: 5),
+                                      Text(
+                                          c.market.symbolErrors[symbol] ??
+                                              (c.engine.coin(symbol).position !=
+                                                      null
+                                                  ? 'Pozisyon açık'
+                                                  : c.engine
+                                                              .quoteFor(symbol)
+                                                              ?.isFresh(DateTime
+                                                                  .now()) !=
+                                                          true
+                                                      ? 'Güncel fiyat bekleniyor'
+                                                      : c.engine.running
+                                                          ? c.engine
+                                                              .coin(symbol)
+                                                              .state
+                                                              .label
+                                                          : 'Bot kapalı'),
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                              color: muted, fontSize: 10)),
+                                    ]))))
+                ]))),
+      ]));
+}
+
 class PositionCard extends StatelessWidget {
   const PositionCard(
       {super.key, required this.position, this.quote, this.metrics});
@@ -631,6 +767,12 @@ class PositionCard extends StatelessWidget {
           const Spacer(),
           BadgePill(position.symbol.split('_').first, mint)
         ]),
+        if (quote?.isFresh(DateTime.now()) != true)
+          const Padding(
+              padding: EdgeInsets.only(top: 10),
+              child: Text(
+                  'Güncel fiyat bekleniyor. Gösterilen değerler son bilinen kayıttır.',
+                  style: TextStyle(color: muted, fontSize: 11))),
         const SizedBox(height: 17),
         Row(children: [
           Expanded(
@@ -675,9 +817,14 @@ class PositionCard extends StatelessWidget {
         Row(children: [
           Expanded(
               child: ValuePair(
-                  'NET K/Z', money(metrics?.netPnl ?? 0, signed: true),
-                  color: pnlColor(metrics?.netPnl ?? 0), large: true)),
-          BadgePill(pct(metrics?.netPct ?? 0), pnlColor(metrics?.netPnl ?? 0))
+                  'NET K/Z',
+                  metrics == null
+                      ? 'Veri bekleniyor'
+                      : money(metrics!.netPnl, signed: true),
+                  color: pnlColor(metrics?.netPnl ?? 0),
+                  large: true)),
+          BadgePill(metrics == null ? '—' : pct(metrics!.netPct),
+              metrics == null ? muted : pnlColor(metrics!.netPnl))
         ]),
       ]));
 }
@@ -808,11 +955,17 @@ class TradesPage extends StatefulWidget {
 }
 
 class _TradesPageState extends State<TradesPage> {
-  String filter = 'Tümü';
+  String filter = 'Tümü', coinFilter = 'Tümü';
   @override
   Widget build(BuildContext context) {
     final all = widget.c.engine.events;
+    if (coinFilter != 'Tümü' &&
+        !widget.c.engine.settings.symbols.contains(coinFilter) &&
+        !all.any((t) => t.symbol == coinFilter)) {
+      coinFilter = 'Tümü';
+    }
     final list = all
+        .where((t) => coinFilter == 'Tümü' || t.symbol == coinFilter)
         .where((t) => switch (filter) {
               'AL' => t.side == 'AL',
               'SAT' => t.side == 'SAT',
@@ -836,6 +989,22 @@ class _TradesPageState extends State<TradesPage> {
                 color: pnlColor(widget.c.engine.realizedPnl))),
         ValuePair('Toplam emir', '${all.length}')
       ])),
+      DropdownButtonFormField<String>(
+          initialValue: coinFilter,
+          decoration: const InputDecoration(labelText: 'Coin filtresi'),
+          items: [
+            'Tümü',
+            ...({
+              ...widget.c.engine.settings.symbols,
+              ...all.map((t) => t.symbol)
+            }.toList()
+              ..sort())
+          ]
+              .map((s) => DropdownMenuItem(
+                  value: s, child: Text(s.replaceAll('_', '/'))))
+              .toList(),
+          onChanged: (s) => setState(() => coinFilter = s ?? 'Tümü')),
+      const SizedBox(height: 14),
       SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           child: Row(children: [
@@ -893,6 +1062,7 @@ class _SettingsPageState extends State<SettingsPage> {
   final Map<String, TextEditingController> fields = {};
   final formKey = GlobalKey<FormState>();
   String symbol = '';
+  List<String> watchSymbols = [];
   StrategySettings? loadedSettings;
   @override
   void initState() {
@@ -914,6 +1084,7 @@ class _SettingsPageState extends State<SettingsPage> {
     loadedSettings = widget.c.engine.settings;
     final j = widget.c.engine.settings.toJson();
     symbol = j['symbol'] as String;
+    watchSymbols = List.of(widget.c.engine.settings.symbols);
     for (final entry in j.entries) {
       if (entry.value is num) {
         fields[entry.key] = TextEditingController(text: '${entry.value}');
@@ -949,7 +1120,9 @@ class _SettingsPageState extends State<SettingsPage> {
               }));
   Future<void> save() async {
     if (!formKey.currentState!.validate()) return;
-    final j = widget.c.engine.settings.toJson()..['symbol'] = symbol;
+    final j = widget.c.engine.settings.toJson()
+      ..['symbol'] = symbol
+      ..['symbols'] = watchSymbols;
     for (final f in fields.entries) {
       j[f.key] = double.parse(f.value.text.replaceAll(',', '.'));
     }
@@ -991,7 +1164,7 @@ class _SettingsPageState extends State<SettingsPage> {
                               'Canlı mod, Binance TR hesabındaki gerçek bakiyeyle AL/SAT emirleri gönderebilir. Kayıp yaşayabilirsiniz.'),
                           const SizedBox(height: 14),
                           Text(
-                              'Sermaye üst sınırı: ${money(widget.c.engine.settings.maxCapital)}\nİşlem başına üst sınır: ${money(widget.c.engine.settings.maxPosition)}\nGünlük zarar sınırı: ${money(widget.c.engine.settings.dailyLossLimit)}\nGünlük en fazla ${widget.c.engine.settings.maxTradesPerDay} alım'),
+                              '${widget.c.engine.settings.symbols.length} coin · Aynı anda en fazla ${widget.c.engine.settings.maxOpenPositions} pozisyon\nToplam sermaye üst sınırı: ${money(widget.c.engine.settings.maxCapital)}\nİşlem başına üst sınır: ${money(widget.c.engine.settings.maxPosition)}\nGünlük zarar sınırı: ${money(widget.c.engine.settings.dailyLossLimit)}\nGünlük en fazla ${widget.c.engine.settings.maxTradesPerDay} alım'),
                           const SizedBox(height: 14),
                           const Text(
                               'Önce HTTPS backend kurulmalı; API anahtarı yalnızca sunucuda ve spot işlem yetkili olmalı. Para çekme yetkisi kapalı olmalı.',
@@ -1119,14 +1292,98 @@ class _SettingsPageState extends State<SettingsPage> {
     token.dispose();
   }
 
+  Future<void> chooseCoins() async {
+    final catalog = widget.c.symbolNames;
+    final choices = {...catalog, ...watchSymbols}.toList()..sort();
+    final selected = watchSymbols.toSet();
+    String query = '';
+    final result = await showDialog<List<String>>(
+        context: context,
+        builder: (context) => StatefulBuilder(
+            builder: (context, update) => AlertDialog(
+                    title: Text('İzlenecek coin’ler · ${selected.length}/20'),
+                    content: SizedBox(
+                        width: 360,
+                        height: 420,
+                        child: Column(children: [
+                          TextField(
+                              decoration: const InputDecoration(
+                                  labelText: 'Coin ara',
+                                  prefixIcon: Icon(Icons.search)),
+                              onChanged: (v) =>
+                                  update(() => query = v.toUpperCase())),
+                          const SizedBox(height: 8),
+                          if (catalog.isEmpty)
+                            const Text(
+                                'Resmi sembol kataloğu bekleniyor. Yeni coin eklemek için piyasa bağlantısını doğrulayın.',
+                                style: TextStyle(color: muted, fontSize: 11)),
+                          TextButton(
+                              onPressed: catalog.isEmpty
+                                  ? null
+                                  : () => update(() {
+                                        selected.clear();
+                                        selected.addAll(
+                                            widget.c.engine.positions.keys);
+                                        for (final s in [
+                                          ...StrategySettings.defaultWatchlist,
+                                          ...catalog
+                                        ]) {
+                                          if (catalog.contains(s) &&
+                                              selected.length < 10) {
+                                            selected.add(s);
+                                          }
+                                        }
+                                      }),
+                              child: const Text('10 coin seç')),
+                          Expanded(
+                              child: ListView(children: [
+                            for (final s
+                                in choices.where((s) => s.contains(query)))
+                              CheckboxListTile(
+                                  dense: true,
+                                  title: Text(s.replaceAll('_', '/')),
+                                  value: selected.contains(s),
+                                  subtitle: widget.c.engine.positions
+                                          .containsKey(s)
+                                      ? const Text(
+                                          'Açık pozisyon · Listede kalmalı')
+                                      : null,
+                                  onChanged: widget.c.engine.positions
+                                              .containsKey(s) ||
+                                          (!selected.contains(s) &&
+                                              (!catalog.contains(s) ||
+                                                  selected.length >= 20))
+                                      ? null
+                                      : (value) => update(() {
+                                            if (value == true) {
+                                              selected.add(s);
+                                            } else {
+                                              selected.remove(s);
+                                            }
+                                          }))
+                          ]))
+                        ])),
+                    actions: [
+                      TextButton(
+                          onPressed: () => Navigator.pop(context),
+                          child: const Text('Vazgeç')),
+                      FilledButton(
+                          onPressed: selected.isEmpty
+                              ? null
+                              : () => Navigator.pop(
+                                  context, selected.toList()..sort()),
+                          child: const Text('Listeyi kullan'))
+                    ])));
+    if (result != null && mounted) {
+      setState(() {
+        watchSymbols = result;
+        if (!result.contains(symbol)) symbol = result.first;
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final symbols = {
-      ...widget.c.symbolNames,
-      widget.c.engine.settings.symbol,
-      symbol
-    }.where((s) => s.isNotEmpty).toList()
-      ..sort();
     return Form(
         key: formKey,
         child: ListView(padding: const EdgeInsets.all(20), children: [
@@ -1210,8 +1467,8 @@ class _SettingsPageState extends State<SettingsPage> {
                           color: mint, fontWeight: FontWeight.w700)),
                   const SizedBox(height: 8),
                   Text(
-                      '${widget.c.backendCheck!.symbol.replaceAll('_', '/')} · Kullanılabilir: ${money(widget.c.backendCheck!.availableTry)}\n'
-                      'TRY komisyonu: ${widget.c.backendCheck!.feePct.toStringAsFixed(3)}% · Spread: ${widget.c.backendCheck!.spreadPct.toStringAsFixed(3)}%\n'
+                      '${widget.c.backendCheck!.symbols.length} spot çift · Kullanılabilir: ${money(widget.c.backendCheck!.availableTry)}\n'
+                      'TRY komisyonu: ${widget.c.backendCheck!.feePct.toStringAsFixed(3)}%\n'
                       'Açık emir: ${widget.c.backendCheck!.reconciliation['openOrderCount']} · Belirsiz bot emri: ${widget.c.backendCheck!.reconciliation['unresolvedIntentCount']}\n'
                       'Sunucu sermaye sınırı: ${money(number(widget.c.backendCheck!.limits['maxCapital']))}\n'
                       'Son kontrol: ${DateFormat('HH:mm:ss').format(widget.c.backendCheck!.verifiedAt.toLocal())}',
@@ -1244,21 +1501,36 @@ class _SettingsPageState extends State<SettingsPage> {
                     style:
                         TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
                 const SizedBox(height: 18),
-                DropdownButtonFormField<String>(
-                    initialValue: symbol,
-                    decoration: const InputDecoration(labelText: 'İşlem çifti'),
-                    items: symbols
-                        .map((s) => DropdownMenuItem(
-                            value: s, child: Text(s.replaceAll('_', '/'))))
-                        .toList(),
-                    onChanged: (s) => setState(() => symbol = s!)),
+                Text(
+                    '${watchSymbols.length} coin seçili · En fazla 20 TRY spot çift',
+                    style: const TextStyle(
+                        color: mint, fontWeight: FontWeight.w700)),
+                const SizedBox(height: 10),
+                Wrap(spacing: 6, runSpacing: 6, children: [
+                  for (final s in watchSymbols)
+                    Chip(label: Text(s.split('_').first))
+                ]),
+                const SizedBox(height: 10),
+                OutlinedButton.icon(
+                    key: const ValueKey('choose-coins'),
+                    onPressed: chooseCoins,
+                    icon: const Icon(Icons.playlist_add_check),
+                    label: const Text('Coin listesini düzenle')),
+                const SizedBox(height: 8),
+                const Text(
+                    'Her coin kendi giriş ve çıkışını izler. Sermaye, günlük zarar ve alım sayısı bütün coin’lerde ortaktır.',
+                    style: TextStyle(color: muted, fontSize: 11, height: 1.4)),
                 const SizedBox(height: 14),
                 field('startingBalance', 'Başlangıç sanal bakiyesi',
                     suffix: 'TL',
                     hint: 'Yeni paper hesapta veya sıfırlamada uygulanır.'),
                 field('capitalPct', 'İşlem başına bakiye', suffix: '%'),
                 field('maxCapital', 'Maksimum toplam sermaye', suffix: 'TL'),
-                field('maxPosition', 'Maksimum pozisyon', suffix: 'TL'),
+                field('maxPosition', 'Coin başına maksimum pozisyon',
+                    suffix: 'TL'),
+                field('maxOpenPositions', 'Aynı anda açık pozisyon sınırı',
+                    hint:
+                        '1–20. Yeterli sermaye ve uygun sinyal olmadan coin alınmaz.'),
               ])),
           Panel(
               child: Column(
@@ -1279,8 +1551,9 @@ class _SettingsPageState extends State<SettingsPage> {
                     suffix: 'TL',
                     hint:
                         'Açık pozisyonun net zararı dahil. TSİ günü kullanılır.'),
-                field('maxTradesPerDay', 'Günlük maksimum alım sayısı',
-                    hint: 'Risk nedeniyle gerekli satışlar engellenmez.'),
+                field('maxTradesPerDay', 'Bütün coin’lerde günlük alım sayısı',
+                    hint:
+                        'Bütün coin’lerde ortak sınırdır. Risk satışları engellenmez.'),
                 field('windowSize', 'Teyit örnek sayısı'),
                 field('observationSeconds', 'Minimum gözlem', suffix: 'sn'),
                 field('cooldownSeconds', 'Satış sonrası bekleme', suffix: 'sn'),
@@ -1319,7 +1592,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   style: TextStyle(color: loss))),
           const SizedBox(height: 12),
           const Text(
-              'CryptoLoop TR 1.1.1 · Spot\nCanlı mod her açılışta kullanıcı onayı gerektirir.',
+              'CryptoLoop TR 1.2.0 · Çok coin spot\nCanlı mod her açılışta kullanıcı onayı gerektirir.',
               textAlign: TextAlign.center,
               style: TextStyle(color: muted, fontSize: 10, height: 1.6)),
         ]));

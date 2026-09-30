@@ -179,7 +179,8 @@ void main() {
       expect(await c.start(), isNotNull);
       expect(await c.applySettings(const StrategySettings(symbol: 'ETH_TRY')),
           isNotNull);
-      response.complete(http.Response(jsonEncode(preflightJson()), 200));
+      response.complete(http.Response(
+          jsonEncode(portfolioPreflightJson(c.engine.settings.symbols)), 200));
       expect(await pending, isNull);
       expect(c.checkingBackend, isFalse);
       expect(c.live, isFalse);

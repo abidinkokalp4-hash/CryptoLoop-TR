@@ -5,17 +5,33 @@ import 'execution.dart';
 import 'models.dart';
 
 class LivePreflight {
-  LivePreflight._(this.data, this.verifiedAt, this.receivedAt);
+  LivePreflight._(this.data, this.verifiedAt, this.receivedAt, [this._checks]);
+  final List<LivePreflight>? _checks;
+  List<LivePreflight> get checks => _checks ?? [this];
+  List<String> get symbols => checks.map((c) => c.symbol).toList();
   final Map<String, dynamic> data;
   final DateTime verifiedAt, receivedAt;
   Map<String, dynamic> get account => data['account'] as Map<String, dynamic>;
   Map<String, dynamic> get market => data['market'] as Map<String, dynamic>;
-  Map<String, dynamic> get reconciliation =>
-      data['reconciliation'] as Map<String, dynamic>;
+  Map<String, dynamic> get reconciliation => _checks == null
+      ? data['reconciliation'] as Map<String, dynamic>
+      : {
+          'safe': checks.every((c) => c.safe),
+          'riskLocked':
+              checks.any((c) => c.reconciliation['riskLocked'] == true),
+          'openOrderCount': checks.fold<int>(
+              0,
+              (sum, c) =>
+                  sum + number(c.reconciliation['openOrderCount']).toInt()),
+          'unresolvedIntentCount':
+              checks.first.reconciliation['unresolvedIntentCount'],
+        };
   Map<String, dynamic> get limits =>
       data['serverLimits'] as Map<String, dynamic>;
   String get symbol => data['symbol'] as String;
-  bool get liveEnabled => data['liveEnabled'] == true;
+  bool get liveEnabled => _checks == null
+      ? data['liveEnabled'] == true
+      : checks.every((c) => c.liveEnabled);
   bool get safe => reconciliation['safe'] == true;
   double get availableTry => number(account['availableTry']);
   double get feePct => number(account['feePct']);
@@ -82,10 +98,61 @@ class LivePreflight {
     return LivePreflight._(j, verified, received);
   }
 
-  String? liveProblem(StrategySettings settings, DateTime now) {
-    if (!isFresh(now) || symbol != settings.symbol) {
-      return 'Hesap kontrolünü yeniden çalıştırın.';
+  factory LivePreflight.fromPortfolioJson(Map<String, dynamic> j,
+      {DateTime? now}) {
+    if (j['symbols'] is! List ||
+        j['checks'] is! List ||
+        j['readOnly'] != true) {
+      throw const ExecutionException(
+          'Çok coin kontrolünü destekleyen güncel backend gerekli.');
     }
+    final symbols = List<String>.from(j['symbols'] as List);
+    final checks = (j['checks'] as List)
+        .map((c) => LivePreflight.fromJson((c as Map).cast<String, dynamic>(),
+            now: now))
+        .toList();
+    if (symbols.isEmpty ||
+        symbols.length > 20 ||
+        symbols.toSet().length != symbols.length ||
+        checks.length != symbols.length ||
+        !symbols.every((s) => checks.where((c) => c.symbol == s).length == 1) ||
+        checks.any((c) =>
+            c.availableTry != checks.first.availableTry ||
+            c.feePct != checks.first.feePct ||
+            ['maxCapital', 'maxPosition', 'dailyLossLimit', 'maxTradesPerDay']
+                .any((k) =>
+                    number(c.limits[k]) != number(checks.first.limits[k])))) {
+      throw const ExecutionException(
+          'Çok coin hesap kontrolü eksik veya tutarsız.');
+    }
+    return LivePreflight._(checks.first.data, checks.first.verifiedAt,
+        checks.first.receivedAt, checks);
+  }
+
+  String? liveProblem(StrategySettings settings, DateTime now) {
+    if (symbols.length != settings.symbols.length ||
+        !settings.symbols.every(symbols.contains)) {
+      return 'Seçili bütün coin’ler için hesap kontrolünü yeniden çalıştırın.';
+    }
+    double basis = 0;
+    int positions = 0;
+    for (final c in checks) {
+      final problem = c._singleProblem(settings, now);
+      if (problem != null) return '${c.symbol}: $problem';
+      final p = c.reconciliation['position'];
+      if (p != null) {
+        basis += number(p['notional']) + number(p['buyFee']);
+        positions++;
+      }
+    }
+    if (basis > settings.maxCapital || positions > settings.maxOpenPositions) {
+      return 'Mevcut toplam pozisyonlar sermaye/pozisyon sayısı sınırını aşıyor.';
+    }
+    return null;
+  }
+
+  String? _singleProblem(StrategySettings settings, DateTime now) {
+    if (!isFresh(now)) return 'Hesap kontrolünü yeniden çalıştırın.';
     if (!liveEnabled) {
       return 'Hesap bağlantısı okunabilir; sunucuda gerçek emirler kapalı. Önce sunucuda onaylanan limitler yapılandırılmalı.';
     }
@@ -188,6 +255,15 @@ class BackendClient {
       request('/v1/reconcile?symbol=$symbol');
   Future<LivePreflight> preflight(String symbol) async =>
       LivePreflight.fromJson(await request('/v1/preflight?symbol=$symbol'));
+  Future<LivePreflight> preflightPortfolio(List<String> symbols) async =>
+      symbols.length == 1
+          ? await preflight(symbols.single)
+          : LivePreflight.fromPortfolioJson(
+              await request('/v1/preflight?symbols=${symbols.join(',')}'));
+  Future<Map<String, dynamic>> reconcilePortfolio(List<String> symbols) =>
+      symbols.length == 1
+          ? reconcile(symbols.single)
+          : request('/v1/reconcile?symbols=${symbols.join(',')}');
   Future<void> arm(StrategySettings settings) async {
     await request('/v1/arm', body: {
       'confirmation': 'CANLI SPOT ISLEM ONAYI',

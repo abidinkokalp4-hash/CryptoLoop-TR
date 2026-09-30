@@ -16,7 +16,10 @@ class AppController extends ChangeNotifier {
       this.offline = false})
       : market = market ?? BinanceTrMarket(),
         backgroundRunner = backgroundRunner ?? BotBackground() {
-    engine = TradingEngine(onChange: _refresh);
+    engine = TradingEngine(
+        settings:
+            const StrategySettings(symbols: StrategySettings.defaultWatchlist),
+        onChange: _refresh);
   }
   final BinanceTrMarket market;
   final bool offline;
@@ -37,15 +40,20 @@ class AppController extends ChangeNotifier {
       loadError = '',
       backendUrl = '',
       backgroundError = '';
-  String interval = '1m';
+  String interval = '1m', selectedSymbol = 'BTC_TRY';
+  bool _seedWatchlist = true;
   bool initialized = false,
       chartLoading = false,
       live = false,
       starting = false,
       _disposed = false;
   int _chartGeneration = 0, _controlEpoch = 0;
-  MarketQuote? get quote => engine.quote;
-  bool get connected => quote?.isFresh(DateTime.now()) == true;
+  MarketQuote? get quote => engine.quoteFor(selectedSymbol);
+  int get connectedCount => engine.settings.symbols
+      .where((s) => engine.quoteFor(s)?.isFresh(DateTime.now()) == true)
+      .length;
+  bool get connected => connectedCount > 0;
+  bool get chartConnected => quote?.isFresh(DateTime.now()) == true;
   List<String> get symbolNames => market.symbols.keys.toList()..sort();
   String get storageKey => live ? 'live-v2' : 'paper-v2';
   void _refresh() {
@@ -58,8 +66,10 @@ class AppController extends ChangeNotifier {
         backgroundRunner.active &&
         !(_notificationTimer?.isActive ?? false)) {
       _notificationTimer = Timer(const Duration(seconds: 1), () {
-        unawaited(backgroundRunner.update(engine.settings.symbol,
-            engine.state.label, connected ? 'Piyasa bağlı' : connection));
+        unawaited(backgroundRunner.update(
+            '${engine.settings.symbols.length} coin · ${engine.positions.length} pozisyon',
+            engine.state.label,
+            connected ? 'Piyasa bağlı' : connection));
       });
     }
     if (!_disposed) notifyListeners();
@@ -70,7 +80,12 @@ class AppController extends ChangeNotifier {
     try {
       store = AppStore(await SharedPreferences.getInstance());
       final saved = store!.read('paper-v2');
-      if (saved != null) engine.restore(saved);
+      if (saved != null) {
+        engine.restore(saved);
+        _seedWatchlist = saved['seedWatchlistPending'] == true ||
+            (saved['settings'] as Map)['symbols'] == null;
+      }
+      selectedSymbol = engine.settings.symbol;
       backendUrl = store!.preferences.getString('backend-url') ?? '';
     } catch (e) {
       loadError = e.toString();
@@ -94,7 +109,8 @@ class AppController extends ChangeNotifier {
     _subscriptions.add(market.quotes.stream.listen((q) {
       final rules = market.symbols[q.symbol];
       if (rules == null) {
-        engine.quote = q;
+        engine.coin(q.symbol).message =
+            'Sembol kuralları doğrulanmadan işlem yapılmaz.';
         connection = 'Fiyat bağlı; sembol kuralları bekleniyor.';
         _refresh();
         return;
@@ -126,7 +142,8 @@ class AppController extends ChangeNotifier {
   Future<void> save() async {
     if (store == null || loadError.isNotEmpty) return;
     try {
-      await store!.write(storageKey, engine.toJson());
+      await store!.write(storageKey,
+          engine.toJson()..['seedWatchlistPending'] = !live && _seedWatchlist);
     } catch (_) {
       engine.running = false;
       engine.state = BotState.error;
@@ -137,7 +154,45 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> reconnect() async {
-    await market.connect(engine.settings.symbol, interval: interval);
+    if (market.symbols.isEmpty) {
+      try {
+        await market.loadSymbols();
+      } catch (e) {
+        connection = e.toString();
+      }
+    }
+    if (_seedWatchlist &&
+        !live &&
+        !engine.running &&
+        market.symbols.isNotEmpty) {
+      final required = {...engine.positions.keys};
+      final candidates = [
+        ...engine.settings.symbols,
+        ...StrategySettings.defaultWatchlist,
+        ...symbolNames
+      ];
+      final chosen = <String>[...required];
+      for (final s in candidates) {
+        if (market.symbols.containsKey(s) &&
+            !chosen.contains(s) &&
+            chosen.length < 10) {
+          chosen.add(s);
+        }
+      }
+      if (chosen.isNotEmpty) {
+        final primary = chosen.contains(engine.settings.symbol)
+            ? engine.settings.symbol
+            : chosen.first;
+        engine.settings = StrategySettings.fromJson(engine.settings.toJson()
+          ..['symbols'] = chosen
+          ..['symbol'] = primary);
+        selectedSymbol = primary;
+        _seedWatchlist = false;
+        await save();
+      }
+    }
+    await market.connectMany(engine.settings.symbols,
+        chartSymbol: selectedSymbol, interval: interval);
     unawaited(loadChart());
   }
 
@@ -147,7 +202,7 @@ class AppController extends ChangeNotifier {
     chartError = '';
     _refresh();
     try {
-      final data = await market.candles(engine.settings.symbol, interval);
+      final data = await market.candles(selectedSymbol, interval);
       if (g != _chartGeneration || _disposed) return;
       candles.clear();
       candles.addAll(data);
@@ -165,7 +220,22 @@ class AppController extends ChangeNotifier {
     if (interval == value) return;
     interval = value;
     candles.clear();
-    await reconnect();
+    await market.selectChart(selectedSymbol, interval);
+    await loadChart();
+  }
+
+  Future<void> selectSymbol(String symbol) async {
+    if (!engine.settings.symbols.contains(symbol) || selectedSymbol == symbol) {
+      return;
+    }
+    selectedSymbol = symbol;
+    candles.clear();
+    ++_chartGeneration;
+    _refresh();
+    if (!offline) {
+      await market.selectChart(symbol, interval);
+      await loadChart();
+    }
   }
 
   Future<String?> start() async {
@@ -191,7 +261,8 @@ class AppController extends ChangeNotifier {
         try {
           backendCheck = null;
           backendCheckError = '';
-          backendCheck = await backend!.preflight(engine.settings.symbol);
+          backendCheck =
+              await backend!.preflightPortfolio(engine.settings.symbols);
           final problem =
               backendCheck!.liveProblem(engine.settings, DateTime.now());
           if (problem != null) return problem;
@@ -239,20 +310,26 @@ class AppController extends ChangeNotifier {
     }
     final problem = s.validate();
     if (problem != null) return problem;
-    if (engine.position != null && s.symbol != engine.settings.symbol) {
-      return 'Açık pozisyon varken işlem çifti değiştirilemez.';
+    if (engine.positions.keys.any((symbol) => !s.symbols.contains(symbol))) {
+      return 'Açık pozisyonu olan coin izleme listesinden çıkarılamaz.';
     }
-    if (engine.position != null &&
-        (s.maxCapital < engine.position!.costBasis ||
-            s.maxPosition < engine.position!.costBasis)) {
-      return 'Sermaye limiti açık pozisyon maliyetinin altına indirilemez.';
+    if (s.maxCapital + 0.000001 < engine.investedBasis ||
+        engine.positions.values
+            .any((p) => s.maxPosition + 0.000001 < p.costBasis) ||
+        s.maxOpenPositions < engine.positions.length) {
+      return 'Sermaye/pozisyon limiti mevcut pozisyonların altına indirilemez.';
     }
-    final changed = s.symbol != engine.settings.symbol;
+    if (market.symbols.isNotEmpty &&
+        s.symbols.any((symbol) => !market.symbols.containsKey(symbol))) {
+      return 'Yalnızca resmi katalogda açık TRY spot çiftleri seçilebilir.';
+    }
+    final changed = !listEquals(s.symbols, engine.settings.symbols);
     engine.settings = s;
+    _seedWatchlist = false;
+    backendCheck = null;
+    if (!s.symbols.contains(selectedSymbol)) selectedSymbol = s.symbol;
     await save();
-    if (changed) {
-      engine.quote = null;
-      engine.lastSellPrice = 0;
+    if (changed && !offline) {
       candles.clear();
       await reconnect();
     }
@@ -264,7 +341,7 @@ class AppController extends ChangeNotifier {
     if (live || engine.running || engine.busy || starting || checkingBackend) {
       return 'Önce paper modunda botu durdurun.';
     }
-    if (engine.position != null) {
+    if (engine.positions.isNotEmpty) {
       return 'Açık paper pozisyon varken sıfırlama yapılamaz.';
     }
     engine = TradingEngine(
@@ -282,7 +359,10 @@ class AppController extends ChangeNotifier {
     try {
       candidate = BackendClient(baseUrl: url.trim(), token: token.trim());
       final health = await candidate.request('/v1/health');
-      if (health['spotOnly'] != true || health['readOnlyPreflight'] != true) {
+      if (health['spotOnly'] != true ||
+          health['readOnlyPreflight'] != true ||
+          (engine.settings.symbols.length > 1 &&
+              health['multiSymbol'] != true)) {
         return 'Emir göndermeyen hesap kontrolü destekleyen spot backend gerekli. Sunucuyu güncelleyin.';
       }
       await secure.write(key: 'backend-bearer', value: token.trim());
@@ -320,8 +400,9 @@ class AppController extends ChangeNotifier {
     _refresh();
     try {
       await _loadBackend();
-      backendCheck = await backend!.preflight(engine.settings.symbol);
-      if (backendCheck!.symbol != engine.settings.symbol) {
+      backendCheck = await backend!.preflightPortfolio(engine.settings.symbols);
+      if (!setEquals(
+          backendCheck!.symbols.toSet(), engine.settings.symbols.toSet())) {
         backendCheck = null;
         throw const ExecutionException(
             'Hesap kontrolü işlem çiftiyle uyuşmuyor.');
@@ -341,7 +422,7 @@ class AppController extends ChangeNotifier {
         engine.busy ||
         starting ||
         checkingBackend ||
-        engine.position != null) {
+        engine.positions.isNotEmpty) {
       return 'Önce botu durdurun ve paper pozisyonu kapatın.';
     }
     starting = true;
@@ -365,8 +446,12 @@ class AppController extends ChangeNotifier {
       liveEngine.settings =
           s; // Use the limits just reviewed, never cached limits.
       final old = engine;
+      for (final symbol in s.symbols) {
+        liveEngine.coin(symbol).quote = old.quoteFor(symbol);
+      }
       engine = liveEngine;
       live = true;
+      _seedWatchlist = false;
       try {
         await reconcileLive();
         if (epoch != _controlEpoch) {
@@ -390,7 +475,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> reconcileLive() async {
-    final j = await backend!.reconcile(engine.settings.symbol);
+    final j = await backend!.reconcilePortfolio(engine.settings.symbols);
     if (j['safe'] != true) {
       throw const ExecutionException(
           'Hesapta belirsiz/açık emir var. Backend uzlaştırması gerekli.');
@@ -406,13 +491,40 @@ class AppController extends ChangeNotifier {
       engine.events.addAll((j['events'] as List)
           .map((v) => TradeEvent.fromJson((v as Map).cast<String, dynamic>())));
     }
-    engine.lastSellPrice = number(j['lastSellPrice']);
-    engine.lastSellTime = j['lastSellTime'] == null
-        ? null
-        : DateTime.parse(j['lastSellTime'] as String);
-    engine.position = j['position'] == null
-        ? null
-        : Position.fromJson((j['position'] as Map).cast<String, dynamic>());
+    final states = j['coins'] is Map
+        ? (j['coins'] as Map).cast<String, dynamic>()
+        : {engine.settings.symbol: j};
+    final positions = <String, Position?>{};
+    for (final symbol in engine.settings.symbols) {
+      if (states[symbol] is! Map) {
+        throw const ExecutionException('Eksik coin uzlaştırması.');
+      }
+      final data = (states[symbol] as Map).cast<String, dynamic>();
+      final p = data['position'] == null
+          ? null
+          : Position.fromJson(
+              (data['position'] as Map).cast<String, dynamic>());
+      if (p != null &&
+          (p.symbol != symbol ||
+              p.quantity <= 0 ||
+              !p.quantity.isFinite ||
+              p.costBasis <= 0 ||
+              !p.costBasis.isFinite)) {
+        throw const ExecutionException('Coin pozisyonu uzlaştırılamadı.');
+      }
+      positions[symbol] = p;
+    }
+    for (final c in engine.coins.values) {
+      c.position = null;
+    }
+    for (final symbol in engine.settings.symbols) {
+      final data = states[symbol] as Map, c = engine.coin(symbol);
+      c.position = positions[symbol];
+      c.lastSellPrice = number(data['lastSellPrice']);
+      c.lastSellTime = data['lastSellTime'] == null
+          ? null
+          : DateTime.parse(data['lastSellTime'] as String);
+    }
     engine.dayStartEquity = engine.liquidationValue - number(j['dailyPnl']);
     engine.uncertainOrder = false;
     if (j['feePct'] != null) {
@@ -423,7 +535,7 @@ class AppController extends ChangeNotifier {
 
   Future<String?> activatePaper() async {
     if (engine.running || engine.busy || starting) return 'Önce botu durdurun.';
-    if (live && engine.position != null) {
+    if (live && engine.positions.isNotEmpty) {
       return 'Canlı pozisyon varken mod değiştirilemez.';
     }
     if (live) await engine.stop();
@@ -432,7 +544,12 @@ class AppController extends ChangeNotifier {
     final s = engine.settings;
     engine = TradingEngine(settings: s, onChange: _refresh, persist: save);
     final saved = store?.read('paper-v2');
-    if (saved != null) engine.restore(saved);
+    if (saved != null) {
+      engine.restore(saved);
+      _seedWatchlist = saved['seedWatchlistPending'] == true ||
+          (saved['settings'] as Map)['symbols'] == null;
+    }
+    selectedSymbol = engine.settings.symbol;
     candles.clear();
     if (!offline) await reconnect();
     _refresh();

@@ -5,23 +5,71 @@ import 'models.dart';
 export 'models.dart';
 
 class RiskManager {
-  double budget(StrategySettings s, double cash) => math.max(
-      0,
-      math.min(math.min(cash * s.capitalPct / 100, s.maxPosition),
-          math.min(s.maxCapital, cash)));
+  double budget(StrategySettings s, double cash,
+          {double invested = 0}) =>
+      math.max(
+          0,
+          math.min(math.min(cash * s.capitalPct / 100, s.maxPosition),
+              math.min(s.maxCapital - invested, cash)));
   String? entryBlock(StrategySettings s, MarketQuote q, double cash,
-      SymbolRules rules, int dailyEntries, bool locked) {
+      SymbolRules rules, int dailyEntries, bool locked,
+      {double invested = 0,
+      int openPositions = 0,
+      bool stalePositions = false}) {
     if (locked) return 'Günlük zarar sınırı aşıldı. Yeni alımlar kilitli.';
     if (dailyEntries >= s.maxTradesPerDay) {
       return 'Günlük maksimum alım sayısına ulaşıldı.';
+    }
+    if (stalePositions) {
+      return 'Açık pozisyonların güncel fiyatları bekleniyor; yeni alım açılmaz.';
+    }
+    if (openPositions >= s.maxOpenPositions) {
+      return 'Eşzamanlı pozisyon sınırına ulaşıldı.';
+    }
+    if (s.maxCapital - invested <= 0.000001) {
+      return 'Toplam sermaye sınırı dolu.';
     }
     if (q.spreadPct > s.maxSpreadPct) {
       return 'Spread sınırın üzerinde; alım bekletiliyor.';
     }
     final price = q.ask * (1 + s.slippageRate);
     return rules.validateOrder(
-        rules.floorQuantity(budget(s, cash) / (price * (1 + s.feeRate))),
+        rules.floorQuantity(
+            budget(s, cash, invested: invested) / (price * (1 + s.feeRate))),
         price);
+  }
+}
+
+class CoinState {
+  Position? position;
+  MarketQuote? quote;
+  double lastSellPrice = 0, observedPeak = 0;
+  DateTime? lastSellTime, observedSince, lastSampleTime;
+  BotState state = BotState.stopped;
+  String message = 'Piyasa verisi bekleniyor';
+  final Queue<double> window = Queue<double>();
+  void clearObservation() {
+    window.clear();
+    observedSince = lastSampleTime = null;
+    observedPeak = 0;
+  }
+
+  Map<String, dynamic> toJson() => {
+        'position': position?.toJson(),
+        'lastSellPrice': lastSellPrice,
+        'lastSellTime': lastSellTime?.toIso8601String()
+      };
+  void restore(Map<String, dynamic> j) {
+    position = j['position'] == null
+        ? null
+        : Position.fromJson((j['position'] as Map).cast<String, dynamic>());
+    lastSellPrice = number(j['lastSellPrice']);
+    lastSellTime = j['lastSellTime'] == null
+        ? null
+        : DateTime.parse(j['lastSellTime'] as String);
+    clearObservation();
+    quote = null;
+    state = BotState.stopped;
   }
 }
 
@@ -41,11 +89,7 @@ class TradingEngine {
   Future<void> Function()? persist;
   void Function()? onChange;
   final risk = RiskManager();
-  double cashTry,
-      realizedPnl = 0,
-      lastSellPrice = 0,
-      dayStartEquity = 0,
-      dayRealizedStart = 0;
+  double cashTry, realizedPnl = 0, dayStartEquity = 0, dayRealizedStart = 0;
   int dailyEntries = 0, sequence = 0;
   String dayKey = '',
       message = 'Botu başlatın. Piyasa verisi otomatik yüklenir.';
@@ -55,29 +99,57 @@ class TradingEngine {
       riskLocked = false,
       busy = false,
       uncertainOrder = false;
-  Position? position;
-  MarketQuote? quote;
-  DateTime? lastSellTime, observedSince, lastSampleTime;
+  final Map<String, CoinState> coins = {};
+  CoinState coin(String symbol) => coins.putIfAbsent(symbol, CoinState.new);
+  Position? get position => coin(settings.symbol).position;
+  set position(Position? value) => coin(settings.symbol).position = value;
+  MarketQuote? get quote => coin(settings.symbol).quote;
+  set quote(MarketQuote? value) => coin(settings.symbol).quote = value;
+  double get lastSellPrice => coin(settings.symbol).lastSellPrice;
+  set lastSellPrice(double value) =>
+      coin(settings.symbol).lastSellPrice = value;
+  DateTime? get lastSellTime => coin(settings.symbol).lastSellTime;
+  set lastSellTime(DateTime? value) =>
+      coin(settings.symbol).lastSellTime = value;
   final List<TradeEvent> events = [];
-  final Queue<double> _window = Queue<double>();
-  double _observedPeak = 0;
+  Map<String, Position> get positions => {
+        for (final entry in coins.entries)
+          if (entry.value.position != null) entry.key: entry.value.position!
+      };
+  MarketQuote? quoteFor(String symbol) => coin(symbol).quote;
+  PositionMetrics? metricsFor(String symbol) {
+    final c = coin(symbol);
+    return c.position == null || c.quote == null
+        ? null
+        : PositionMetrics(c.position!, c.quote!, settings);
+  }
+
   bool get isPaper => execution.isPaper;
-  PositionMetrics? get metrics => position == null || quote == null
-      ? null
-      : PositionMetrics(position!, quote!, settings);
-  double get markValue =>
-      cashTry +
-      (position?.quantity ?? 0) * (quote?.last ?? position?.entryPrice ?? 0);
+  PositionMetrics? get metrics => metricsFor(settings.symbol);
+  double get investedBasis =>
+      positions.values.fold(0, (sum, p) => sum + p.costBasis);
+  bool get hasStalePositions =>
+      positions.keys.any((s) => quoteFor(s)?.isFresh(clock()) != true);
+  double get cryptoValue => positions.entries.fold(
+      0,
+      (sum, e) =>
+          sum +
+          e.value.quantity * (quoteFor(e.key)?.last ?? e.value.entryPrice));
+  double get markValue => cashTry + cryptoValue;
   double get liquidationValue =>
       cashTry +
-      (position == null
-          ? 0
-          : position!.costBasis + (metrics?.netPnl ?? -position!.buyFee));
+      positions.entries.fold(
+          0,
+          (sum, e) =>
+              sum +
+              e.value.costBasis +
+              (metricsFor(e.key)?.netPnl ?? -e.value.buyFee));
   double get dailyPnl =>
       dayStartEquity == 0 ? 0 : liquidationValue - dayStartEquity;
-  double get reentryLevel =>
-      lastSellPrice * (1 - settings.reentryDropPct / 100);
-  int get observationCount => _window.length;
+  double reentryLevelFor(String symbol) =>
+      coin(symbol).lastSellPrice * (1 - settings.reentryDropPct / 100);
+  double get reentryLevel => reentryLevelFor(settings.symbol);
+  int get observationCount => coin(settings.symbol).window.length;
 
   void start() {
     if (uncertainOrder) {
@@ -88,21 +160,30 @@ class TradingEngine {
     }
     running = true;
     entriesPaused = false;
-    _clearObservation();
-    state = position != null
+    for (final symbol in settings.symbols) {
+      final c = coin(symbol);
+      c.clearObservation();
+      c.state = c.position != null
+          ? BotState.holding
+          : c.lastSellPrice > 0
+              ? BotState.waitingReentry
+              : BotState.waitingEntry;
+      c.message = c.state.label;
+    }
+    state = positions.isNotEmpty
         ? BotState.holding
         : lastSellPrice > 0
             ? BotState.waitingReentry
             : BotState.waitingEntry;
-    message = position != null
-        ? 'Mevcut pozisyon izleniyor.'
+    message = positions.isNotEmpty
+        ? '${positions.length} pozisyon izleniyor.'
         : 'Piyasa izleniyor; giriş koşulu ve fiyat teyidi bekleniyor.';
     _notify();
   }
 
   void pauseEntries() {
     entriesPaused = true;
-    if (position == null) state = BotState.paused;
+    if (positions.isEmpty) state = BotState.paused;
     message =
         'Yeni alımlar durduruldu. Açık pozisyonun risk ve kâr çıkışları izlenir.';
     _notify();
@@ -113,14 +194,16 @@ class TradingEngine {
     if (running) {
       state = riskLocked
           ? BotState.riskLock
-          : position != null
+          : positions.isNotEmpty
               ? BotState.holding
               : lastSellPrice > 0
                   ? BotState.waitingReentry
                   : BotState.waitingEntry;
     }
     message = state.label;
-    _clearObservation();
+    for (final c in coins.values) {
+      c.clearObservation();
+    }
     _notify();
   }
 
@@ -128,6 +211,9 @@ class TradingEngine {
     running = false;
     entriesPaused = true;
     state = BotState.stopped;
+    for (final c in coins.values) {
+      c.state = BotState.stopped;
+    }
     message = emergency
         ? 'Acil durdurma: yeni emir gönderilmez. Açık pozisyon satılmadı.'
         : 'Bot tamamen durduruldu. Açık pozisyon korunuyor.';
@@ -143,13 +229,6 @@ class TradingEngine {
   }
 
   void _notify() => onChange?.call();
-  void _clearObservation() {
-    _window.clear();
-    observedSince = null;
-    lastSampleTime = null;
-    _observedPeak = 0;
-  }
-
   static String istanbulDay(DateTime d) {
     final t = d.toUtc().add(const Duration(hours: 3));
     return '${t.year}-${t.month}-${t.day}';
@@ -170,106 +249,135 @@ class TradingEngine {
     }
   }
 
-  bool _signal({required bool reentry}) {
-    if (_window.length < settings.windowSize ||
-        observedSince == null ||
-        clock().difference(observedSince!).inSeconds <
+  bool _signal(CoinState c, {required bool reentry}) {
+    if (c.window.length < settings.windowSize ||
+        c.observedSince == null ||
+        clock().difference(c.observedSince!).inSeconds <
             settings.observationSeconds) {
       return false;
     }
-    final v = _window.toList(), p = _window.last;
+    final v = c.window.toList(), p = c.window.last;
     final lo = v.reduce(math.min), hi = v.reduce(math.max);
     if (!(p >= lo * (1 + settings.reboundPct / 100) && p > v[v.length - 2])) {
       return false;
     }
     final flat = (hi - lo) / lo * 100 <= settings.flatRangePct;
     if (reentry) {
-      if (lastSellTime == null ||
-          clock().difference(lastSellTime!).inSeconds <
+      if (c.lastSellTime == null ||
+          clock().difference(c.lastSellTime!).inSeconds <
               settings.cooldownSeconds) {
         return false;
       }
-      return p <= reentryLevel || (flat && p <= lastSellPrice);
+      return p <= reentryLevelFor(c.quote!.symbol) ||
+          (flat && p <= c.lastSellPrice);
     }
-    return p <= _observedPeak * (1 - settings.entryDropPct / 100) || flat;
+    return p <= c.observedPeak * (1 - settings.entryDropPct / 100) || flat;
   }
 
   Future<void> onQuote(MarketQuote q, SymbolRules rules) async {
-    if (q.symbol != settings.symbol || !q.isFresh(clock())) return;
-    quote = q;
+    if (!settings.symbols.contains(q.symbol) ||
+        rules.symbol != q.symbol ||
+        !q.isFresh(clock())) {
+      return;
+    }
+    final c = coin(q.symbol);
+    c.quote = q;
     _rollDay();
     _notify();
     if (!running || busy || uncertainOrder) return;
-    if (lastSampleTime == null ||
-        clock().difference(lastSampleTime!).inMilliseconds >= 1000) {
-      observedSince ??= clock();
-      lastSampleTime = clock();
-      _window.addLast(q.last);
-      _observedPeak = math.max(_observedPeak, q.last);
-      while (_window.length > settings.windowSize) {
-        _window.removeFirst();
+    if (c.lastSampleTime == null ||
+        clock().difference(c.lastSampleTime!).inMilliseconds >= 1000) {
+      c.observedSince ??= clock();
+      c.lastSampleTime = clock();
+      c.window.addLast(q.last);
+      c.observedPeak = math.max(c.observedPeak, q.last);
+      while (c.window.length > settings.windowSize) {
+        c.window.removeFirst();
       }
     }
-    if (position != null) {
-      final m = metrics!, stopLoss = m.netPct <= -settings.stopLossPct;
+    if (c.position != null) {
+      final m = metricsFor(q.symbol)!,
+          stopLoss = m.netPct <= -settings.stopLossPct;
       if (stopLoss || (m.netPnl > 0 && m.netPct >= settings.minNetProfitPct)) {
-        await _sell(q, rules, stopLoss ? 'Stop loss' : 'Net kâr hedefi');
+        await _sell(q, rules, c, stopLoss ? 'Stop loss' : 'Net kâr hedefi');
       } else {
-        state = riskLocked ? BotState.riskLock : BotState.holding;
-        message = riskLocked
-            ? 'Günlük zarar limiti aşıldı. Pozisyonun çıkış kuralları izleniyor.'
-            : 'Pozisyon açık; tüm maliyetlerden sonra net kâr hedefi izleniyor.';
+        c.state = BotState.holding;
+        c.message = 'Pozisyon açık; net kâr ve stop loss izleniyor.';
       }
-      _notify();
-      return;
+    } else {
+      final block = risk.entryBlock(
+          settings, q, cashTry, rules, dailyEntries, riskLocked,
+          invested: investedBasis,
+          openPositions: positions.length,
+          stalePositions: hasStalePositions);
+      if (block != null) {
+        c.state = riskLocked || dailyEntries >= settings.maxTradesPerDay
+            ? BotState.riskLock
+            : BotState.waitingEntry;
+        c.message = block;
+      } else if (entriesPaused) {
+        c.state = BotState.paused;
+        c.message = c.state.label;
+      } else {
+        final reentry = c.lastSellPrice > 0;
+        c.state = reentry ? BotState.waitingReentry : BotState.waitingEntry;
+        c.message = reentry
+            ? 'Geri çekilme/yataylaşma ve yükseliş teyidi bekleniyor.'
+            : 'Giriş teyidi bekleniyor: ${c.window.length}/${settings.windowSize} örnek.';
+        if (_signal(c, reentry: reentry)) await _buy(q, rules, c);
+      }
     }
-    final block =
-        risk.entryBlock(settings, q, cashTry, rules, dailyEntries, riskLocked);
-    if (block != null) {
-      state = riskLocked || dailyEntries >= settings.maxTradesPerDay
+    if (running && !busy) {
+      state = riskLocked
           ? BotState.riskLock
-          : BotState.waitingEntry;
-      message = block;
-      _notify();
-      return;
+          : positions.isNotEmpty
+              ? BotState.holding
+              : entriesPaused
+                  ? BotState.paused
+                  : c.state;
+      message = '${q.symbol.split('_').first}: ${c.message}';
     }
-    if (entriesPaused) {
-      state = BotState.paused;
-      _notify();
-      return;
-    }
-    final reentry = lastSellPrice > 0;
-    state = reentry ? BotState.waitingReentry : BotState.waitingEntry;
-    message = reentry
-        ? 'Fiyat kovalanmıyor. Geri çekilme/yataylaşma sonrası yükseliş teyidi bekleniyor.'
-        : 'Piyasa izleniyor: ${_window.length}/${settings.windowSize} örnek. Giriş ve yükseliş teyidi bekleniyor.';
-    if (_signal(reentry: reentry)) await _buy(q, rules);
     _notify();
   }
 
   String _intent() => 'cl-${clock().microsecondsSinceEpoch}-${++sequence}';
-  Future<void> _buy(MarketQuote q, SymbolRules rules) async {
+  Future<void> _buy(MarketQuote q, SymbolRules rules, CoinState c) async {
     busy = true;
-    state = BotState.buying;
+    c.state = state = BotState.buying;
     message = 'Alış emri işleniyor';
     _notify();
     try {
       if (persist != null) await persist!();
-      if (!running) return;
-      final budget = risk.budget(settings, cashTry);
+      if (!running || !q.isFresh(clock())) return;
+      final block = risk.entryBlock(
+          settings, q, cashTry, rules, dailyEntries, riskLocked,
+          invested: investedBasis,
+          openPositions: positions.length,
+          stalePositions: hasStalePositions);
+      if (block != null || entriesPaused) {
+        c.message = block ?? 'Yeni alımlar duraklatıldı.';
+        return;
+      }
+      final budget = risk.budget(settings, cashTry, invested: investedBasis);
       final f = await execution.buy(
           quote: q,
           rules: rules,
           settings: settings,
           budget: budget,
           intentId: _intent());
-      if (f.buyCost > budget + 0.000001 || f.buyCost > cashTry + 0.000001) {
+      if ([f.quantity, f.price, f.notional, f.fee]
+              .any((v) => !v.isFinite || v < 0) ||
+          f.quantity <= 0 ||
+          f.price <= 0 ||
+          f.notional <= 0 ||
+          f.buyCost > budget + 0.000001 ||
+          f.buyCost > cashTry + 0.000001) {
         throw const ExecutionException(
             'Gerçekleşen emir sermaye sınırını aştı; uzlaştırma gerekli.',
             uncertain: true);
       }
       cashTry -= f.buyCost;
-      position = Position(
+      c.position = Position(
           symbol: q.symbol,
           quantity: f.quantity,
           entryPrice: f.price,
@@ -291,33 +399,35 @@ class TradingEngine {
               orderId: f.orderId,
               paper: f.paper,
               reason:
-                  lastSellPrice > 0 ? 'Yeniden giriş teyidi' : 'Giriş teyidi',
+                  c.lastSellPrice > 0 ? 'Yeniden giriş teyidi' : 'Giriş teyidi',
               spreadCost: f.spreadCost,
               slippageCost: f.slippageCost));
       dailyEntries++;
-      state = running ? BotState.holding : BotState.stopped;
+      c.state = state = running ? BotState.holding : BotState.stopped;
       message = running
           ? '${q.symbol.split('_').first} alındı. Net kâr ve risk hedefleri izleniyor.'
           : 'Emir durdurmadan önce gerçekleşti. Pozisyon kaydedildi; bot kapalı.';
-      _clearObservation();
+      c.message = message;
+      c.clearObservation();
       if (persist != null) await persist!();
     } catch (e) {
-      _executionError(e);
+      await _executionError(e);
     } finally {
       busy = false;
       _notify();
     }
   }
 
-  Future<void> _sell(MarketQuote q, SymbolRules rules, String reason) async {
+  Future<void> _sell(
+      MarketQuote q, SymbolRules rules, CoinState c, String reason) async {
     busy = true;
-    state = BotState.selling;
+    c.state = state = BotState.selling;
     message = 'Satış emri gönderiliyor';
     _notify();
     try {
       if (persist != null) await persist!();
-      if (!running) return;
-      final p = position!;
+      if (!running || !q.isFresh(clock())) return;
+      final p = c.position!;
       final f = await execution.sell(
           quote: q,
           rules: rules,
@@ -325,6 +435,16 @@ class TradingEngine {
           position: p,
           intentId: _intent(),
           stopLoss: reason == 'Stop loss');
+      if ([f.quantity, f.price, f.notional, f.fee]
+              .any((v) => !v.isFinite || v < 0) ||
+          f.notional <= 0 ||
+          f.price <= 0 ||
+          f.fee > f.notional ||
+          f.quantity <= 0 ||
+          f.quantity > p.quantity + 1e-12) {
+        throw const ExecutionException('Satış miktarı pozisyon ile uyuşmuyor.',
+            uncertain: true);
+      }
       final ratio = math.min(1.0, f.quantity / p.quantity),
           basis = p.costBasis * ratio;
       final pnl = f.sellProceeds - basis;
@@ -348,7 +468,7 @@ class TradingEngine {
               slippageCost: f.slippageCost));
       final remaining = p.quantity - f.quantity;
       if (remaining > 1e-12) {
-        position = Position(
+        c.position = Position(
             symbol: p.symbol,
             quantity: remaining,
             entryPrice: p.entryPrice,
@@ -360,39 +480,49 @@ class TradingEngine {
             slippageCost: p.slippageCost * (1 - ratio));
         message = 'Kısmi satış; kalan pozisyon izleniyor.';
       } else {
-        position = null;
-        lastSellPrice = f.price;
-        lastSellTime = clock();
+        c.position = null;
+        c.lastSellPrice = f.price;
+        c.lastSellTime = clock();
         message =
             'Satış gerçekleşti. Yeni giriş için geri çekilme veya yataylaşma bekleniyor.';
       }
       _rollDay();
-      _clearObservation();
-      state = !running
+      c.message = message;
+      c.clearObservation();
+      c.state = state = !running
           ? BotState.stopped
-          : position != null
+          : c.position != null
               ? BotState.holding
               : riskLocked
                   ? BotState.riskLock
                   : BotState.waitingReentry;
       if (persist != null) await persist!();
     } catch (e) {
-      _executionError(e);
+      await _executionError(e);
     } finally {
       busy = false;
       _notify();
     }
   }
 
-  void _executionError(Object e) {
+  Future<void> _executionError(Object e) async {
     if (e is ExecutionException) uncertainOrder = uncertainOrder || e.uncertain;
     running = false;
     state = BotState.error;
     message = e.toString();
+    _notify();
+    if (!isPaper) {
+      try {
+        await execution.halt();
+      } catch (_) {
+        message = '$e · Sunucu durdurması doğrulanamadı; hesabı kontrol edin.';
+      }
+    }
   }
 
   Map<String, dynamic> toJson() => {
-        'schema': 2,
+        'schema': 3,
+        'coins': {for (final e in coins.entries) e.key: e.value.toJson()},
         'settings': settings.toJson(),
         'cashTry': cashTry,
         'realizedPnl': realizedPnl,
@@ -416,13 +546,29 @@ class TradingEngine {
     }
     cashTry = number(j['cashTry'], settings.startingBalance);
     realizedPnl = number(j['realizedPnl']);
-    lastSellPrice = number(j['lastSellPrice']);
-    lastSellTime = j['lastSellTime'] == null
-        ? null
-        : DateTime.parse(j['lastSellTime'] as String);
-    position = j['position'] == null
-        ? null
-        : Position.fromJson((j['position'] as Map).cast<String, dynamic>());
+    coins.clear();
+    if (j['coins'] is Map) {
+      for (final e in (j['coins'] as Map).entries) {
+        final symbol = e.key as String;
+        if (!RegExp(r'^[A-Z0-9]+_TRY$').hasMatch(symbol)) {
+          throw const FormatException('Geçersiz kayıtlı çift');
+        }
+        coin(symbol).restore((e.value as Map).cast<String, dynamic>());
+        final p = coin(symbol).position;
+        if (p != null &&
+            (p.symbol != symbol ||
+                !settings.symbols.contains(symbol) ||
+                p.quantity <= 0 ||
+                !p.quantity.isFinite ||
+                !p.costBasis.isFinite ||
+                p.costBasis <= 0)) {
+          throw const FormatException('Kayıtlı pozisyon doğrulanamadı');
+        }
+      }
+    } else {
+      coin(settings.symbol)
+          .restore(j); // v2 single-coin ledger migration, cash counted once.
+    }
     events.clear();
     events.addAll((j['events'] as List? ?? [])
         .map((e) => TradeEvent.fromJson((e as Map).cast<String, dynamic>())));

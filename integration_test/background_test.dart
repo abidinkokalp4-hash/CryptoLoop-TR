@@ -16,18 +16,21 @@ void main() {
     final c = AppController(offline: true);
     await c.init();
     await c.resetPaper();
-    const rules = SymbolRules(symbol: 'BTC_TRY', minNotional: 10);
-    c.market.symbols['BTC_TRY'] = rules;
-    c.engine.quote = MarketQuote(
-        symbol: 'BTC_TRY', last: 100, bid: 100, ask: 100, time: DateTime.now());
-    c.engine.position = Position(
-        symbol: 'BTC_TRY',
-        quantity: 1,
-        entryPrice: 100,
-        notional: 100,
-        buyFee: 0.15,
-        openedAt: DateTime.now(),
-        orderId: 'P-device-test');
+    for (final symbol in StrategySettings.defaultWatchlist) {
+      c.market.symbols[symbol] = SymbolRules(symbol: symbol, minNotional: 10);
+      c.engine.coin(symbol).quote = MarketQuote(
+          symbol: symbol, last: 100, bid: 100, ask: 100, time: DateTime.now());
+      c.engine.coin(symbol).position = Position(
+          symbol: symbol,
+          quantity: 1,
+          entryPrice: 100,
+          notional: 100,
+          buyFee: 0.15,
+          openedAt: DateTime.now(),
+          orderId: 'P-device-$symbol');
+    }
+    c.engine.cashTry = 8998.5;
+    expect(c.engine.positions, hasLength(10));
     await tester.pumpWidget(CryptoLoopApp(controller: c));
     await tester.pumpAndSettle();
     expect(await c.start(), isNull);
@@ -45,25 +48,29 @@ void main() {
             .invokeMapMethod<String, dynamic>('status'))!['screenInteractive'],
         isFalse);
     expect(c.engine.running, isTrue);
-    await c.engine.onQuote(
-        MarketQuote(
-            symbol: 'BTC_TRY',
-            last: 102,
-            bid: 102,
-            ask: 102,
-            time: DateTime.now()),
-        rules);
-    expect(c.engine.position, isNull);
-    expect(c.engine.events.single.side, 'SAT');
-    expect(c.engine.events.single.paper, isTrue);
-    expect(c.engine.events.single.pnl, greaterThan(0));
+    for (final symbol in StrategySettings.defaultWatchlist) {
+      await c.engine.onQuote(
+          MarketQuote(
+              symbol: symbol,
+              last: 102,
+              bid: 102,
+              ask: 102,
+              time: DateTime.now()),
+          c.market.symbols[symbol]!);
+    }
+    expect(c.engine.positions, isEmpty);
+    expect(c.engine.events, hasLength(10));
+    expect(
+        c.engine.events.every((t) => t.side == 'SAT' && t.paper && t.pnl > 0),
+        isTrue);
+    debugPrint('CRYPTOLOOP_TEN_COIN_PAPER_EXITS_VERIFIED');
     await native.invokeMethod<bool>('testNotificationStop');
     for (var i = 0; i < 30 && c.engine.running; i++) {
       await Future<void>.delayed(const Duration(milliseconds: 100));
     }
     expect(c.engine.running, isFalse);
     await c.save();
-    expect(c.store!.read('paper-v2')!['events'], hasLength(1));
+    expect(c.store!.read('paper-v2')!['events'], hasLength(10));
     await Future<void>.delayed(const Duration(milliseconds: 500));
     expect(
         (await native.invokeMapMethod<String, dynamic>('status'))!['running'],

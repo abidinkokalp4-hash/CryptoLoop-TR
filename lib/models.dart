@@ -32,8 +32,24 @@ extension BotStateText on BotState {
 }
 
 class StrategySettings {
+  // Watch-list candidates, not a promise that an asset is currently tradable.
+  // The official symbol catalog must validate every pair before any execution.
+  static const defaultWatchlist = [
+    'BTC_TRY',
+    'ETH_TRY',
+    'BNB_TRY',
+    'SOL_TRY',
+    'XRP_TRY',
+    'DOGE_TRY',
+    'ADA_TRY',
+    'AVAX_TRY',
+    'LINK_TRY',
+    'DOT_TRY'
+  ];
   const StrategySettings(
       {this.symbol = 'BTC_TRY',
+      List<String>? symbols,
+      this.maxOpenPositions = 10,
       this.startingBalance = 10000,
       this.capitalPct = 20,
       this.maxCapital = 10000,
@@ -51,8 +67,12 @@ class StrategySettings {
       this.windowSize = 30,
       this.flatRangePct = 0.15,
       this.observationSeconds = 30,
-      this.cooldownSeconds = 15});
+      this.cooldownSeconds = 15})
+      : _symbols = symbols;
   final String symbol;
+  final List<String>? _symbols;
+  List<String> get symbols => List.unmodifiable(_symbols ?? [symbol]);
+  final int maxOpenPositions;
   final double startingBalance,
       capitalPct,
       maxCapital,
@@ -72,6 +92,8 @@ class StrategySettings {
   double get slippageRate => slippagePct / 100;
   Map<String, dynamic> toJson() => {
         'symbol': symbol,
+        'symbols': symbols,
+        'maxOpenPositions': maxOpenPositions,
         'startingBalance': startingBalance,
         'capitalPct': capitalPct,
         'maxCapital': maxCapital,
@@ -96,6 +118,10 @@ class StrategySettings {
     double n(String k) => number(j[k], number(defaults[k]));
     return StrategySettings(
         symbol: j['symbol'] as String? ?? 'BTC_TRY',
+        symbols: j['symbols'] == null
+            ? null
+            : List<String>.from(j['symbols'] as List),
+        maxOpenPositions: n('maxOpenPositions').toInt(),
         startingBalance: n('startingBalance'),
         capitalPct: n('capitalPct'),
         maxCapital: n('maxCapital'),
@@ -116,8 +142,15 @@ class StrategySettings {
         cooldownSeconds: n('cooldownSeconds').toInt());
   }
   String? validate() {
-    if (!RegExp(r'^[A-Z0-9]+_TRY$').hasMatch(symbol)) {
+    if (symbols.isEmpty ||
+        symbols.length > 20 ||
+        symbols.toSet().length != symbols.length ||
+        !symbols.contains(symbol) ||
+        symbols.any((s) => !RegExp(r'^[A-Z0-9]+_TRY$').hasMatch(s))) {
       return 'Yalnızca TRY spot çiftleri kullanılabilir.';
+    }
+    if (maxOpenPositions < 1 || maxOpenPositions > 20) {
+      return 'Aynı anda açık pozisyon sınırı 1–20 olmalıdır.';
     }
     if (toJson().values.whereType<num>().any((v) => !v.isFinite || v < 0)) {
       return 'Değerler sonlu ve pozitif olmalıdır.';

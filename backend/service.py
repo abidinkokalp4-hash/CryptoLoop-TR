@@ -53,7 +53,7 @@ class BotService:
     def health(self):
         return {'spotOnly': True, 'liveEnabled': self.enabled, 'armed': self.armed,
                 'credentialsConfigured': bool(self.client._key and self.client._secret),
-                'readOnlyPreflight': True}
+                'readOnlyPreflight': True, 'multiSymbol': True, 'maxSymbols': 20}
     def _rows(self):
         return self.db.execute('SELECT * FROM intents ORDER BY created, rowid').fetchall()
     def _positions(self):
@@ -88,9 +88,9 @@ class BotService:
         fee = dec(account['fiatTakerCommission'])
         if fee > self.fee_ceiling: raise ApiError('Hesap komisyonu sunucu üst sınırını aşıyor.')
         return fee
-    def _rules(self, symbol):
+    def _rules(self, symbol, catalog=None):
         if not re.fullmatch(r'[A-Z0-9]+_TRY', symbol): raise ApiError('Yalnızca TRY spot çifti kabul edilir.')
-        for r in self.client.symbols():
+        for r in self.client.symbols() if catalog is None else catalog:
             if r['symbol'] == symbol:
                 if int(r['type']) != 1 or not r.get('spotTradingEnable') or 'MARKET' not in r['orderTypes']:
                     raise ApiError('Desteklenmeyen veya kapalı spot çift.')
@@ -158,34 +158,64 @@ class BotService:
         return {'events': events, 'lastSellPrice': fmt(last_sell), 'lastSellTime': last_time, 'safe': safe, 'availableTry': fmt(assets.get('TRY', D(0))), 'position': result,
             'realizedPnl': fmt(realized), 'dailyPnl': fmt(daily_pnl), 'dailyEntries': entries,
             'riskLocked': self._risk_locked(), 'feePct': fmt(self.fee_ceiling * 100), 'accountFeePct': fmt(self._fee(account) * 100)}
-    def preflight(self, symbol):
-        """Only exchange GET requests. Never arm, cancel, or place an order.
-
-        canTrade describes the account, not this key's permissions. Withdrawal
-        permissions cannot be verified from the account response.
-        """
+    @staticmethod
+    def _symbols(value):
+        symbols = [value] if isinstance(value, str) else value
+        if not isinstance(symbols, list) or not 1 <= len(symbols) <= 20 or any(
+                not isinstance(s, str) or not re.fullmatch(r'[A-Z0-9]+_TRY', s) for s in symbols) or len(set(symbols)) != len(symbols):
+            raise ApiError('1–20 farklı TRY spot çifti gerekli.')
+        return list(symbols)
+    def _portfolio_snapshot(self, symbols, account, open_orders):
+        coins = {symbol: self._reconcile_snapshot(symbol, account, open_orders[symbol]) for symbol in symbols}
+        positions, realized, daily_pnl, entries = self._positions()
+        safe = all(c['safe'] for c in coins.values()) and not any(
+            p['quantity'] > 0 and symbol not in symbols for symbol, p in positions.items())
+        events = sorted((e for c in coins.values() for e in c['events']), key=lambda e:e['time'], reverse=True)
+        return {'symbols': symbols, 'coins': coins, 'events': events, 'safe': safe,
+            'availableTry': fmt(self._assets(account).get('TRY', D(0))), 'realizedPnl': fmt(realized),
+            'dailyPnl': fmt(daily_pnl), 'dailyEntries': entries, 'riskLocked': self._risk_locked(),
+            'feePct': fmt(self.fee_ceiling * 100), 'accountFeePct': fmt(self._fee(account) * 100)}
+    def reconcile_many(self, symbols):
         with self.lock:
-            self.client.sync_time(); self._rules(symbol)
-            book = self.client.book(symbol)
-            bid, ask = dec(book['bids'][0][0]), dec(book['asks'][0][0])
-            if not D(0) < bid <= ask: raise ApiError('Emir defteri doğrulanamadı.')
-            account = self.client.account(); fee = self._fee(account)
-            open_orders = self.client.orders(symbol, 1)
-            history = self.client.orders(symbol, 2)
-            trades = self.client.trades(symbol)
-            self._resolve()
-            snapshot = self._reconcile_snapshot(symbol, account, open_orders)
-            return {'readOnly': True, 'symbol': symbol, 'verifiedAt': utc_iso(self.clock()),
-                'liveEnabled': self.enabled, 'armed': self.armed,
-                'market': {'bid': fmt(bid), 'ask': fmt(ask), 'spreadPct': fmt((ask - bid) / ((ask + bid) / 2) * 100)},
-                'account': {'availableTry': snapshot['availableTry'], 'feePct': fmt(fee * 100),
-                    'canTrade': int(account.get('canTrade', 0)) == 1},
-                'reconciliation': {'safe': snapshot['safe'], 'riskLocked': snapshot['riskLocked'],
-                    'openOrderCount': len(open_orders), 'unresolvedIntentCount': self._unknown(),
-                    'historyCount': len(history), 'tradeCount': len(trades), 'position': snapshot['position']},
-                'serverLimits': {'maxCapital': fmt(self.max_capital), 'maxPosition': fmt(self.max_position),
-                    'dailyLossLimit': fmt(self.daily_loss), 'maxTradesPerDay': self.max_entries},
-                'keyPermissionsVerified': False, 'withdrawalPermissionVerified': False}
+            symbols = self._symbols(symbols)
+            self.client.sync_time(); self._resolve()
+            account = self.client.account(); self._fee(account)
+            opened = {s: self.client.orders(s, 1) for s in symbols}
+            return self._portfolio_snapshot(symbols, account, opened)
+    def _preflight_snapshot(self, symbol, account, book, open_orders, history, trades):
+        bid, ask = dec(book['bids'][0][0]), dec(book['asks'][0][0])
+        if not D(0) < bid <= ask: raise ApiError('Emir defteri doğrulanamadı.')
+        fee = self._fee(account)
+        snapshot = self._reconcile_snapshot(symbol, account, open_orders)
+        return {'readOnly': True, 'symbol': symbol, 'verifiedAt': utc_iso(self.clock()),
+            'liveEnabled': self.enabled, 'armed': self.armed,
+            'market': {'bid': fmt(bid), 'ask': fmt(ask), 'spreadPct': fmt((ask - bid) / ((ask + bid) / 2) * 100)},
+            'account': {'availableTry': snapshot['availableTry'], 'feePct': fmt(fee * 100),
+                'canTrade': int(account.get('canTrade', 0)) == 1},
+            'reconciliation': {'safe': snapshot['safe'], 'riskLocked': snapshot['riskLocked'],
+                'openOrderCount': len(open_orders), 'unresolvedIntentCount': self._unknown(),
+                'historyCount': len(history), 'tradeCount': len(trades), 'position': snapshot['position']},
+            'serverLimits': {'maxCapital': fmt(self.max_capital), 'maxPosition': fmt(self.max_position),
+                'dailyLossLimit': fmt(self.daily_loss), 'maxTradesPerDay': self.max_entries},
+            'keyPermissionsVerified': False, 'withdrawalPermissionVerified': False}
+    def preflight(self, symbol):
+        return self.preflight_many([symbol])['checks'][0]
+    def preflight_many(self, symbols):
+        """One shared account snapshot, only GET requests; never arm/place/cancel."""
+        with self.lock:
+            symbols = self._symbols(symbols)
+            self.client.sync_time(); catalog = self.client.symbols()
+            for symbol in symbols: self._rules(symbol, catalog)
+            self._resolve(); account = self.client.account(); self._fee(account)
+            checks, opened = [], {}
+            for symbol in symbols:
+                book = self.client.book(symbol); opened[symbol] = self.client.orders(symbol, 1)
+                history = self.client.orders(symbol, 2); trades = self.client.trades(symbol)
+                checks.append(self._preflight_snapshot(symbol, account, book, opened[symbol], history, trades))
+            safe = self._portfolio_snapshot(symbols, account, opened)['safe']
+            if not safe:
+                for c in checks: c['reconciliation']['safe'] = False
+            return {'readOnly': True, 'symbols': symbols, 'checks': checks}
     def arm(self, body):
         with self.lock:
             self.armed = False; self.settings = None
@@ -200,7 +230,12 @@ class BotService:
                 raise ApiError('Sermaye/pozisyon limiti sunucunun izin verdiği sınırı aşıyor.')
             if dec(s['dailyLossLimit']) <= 0 or int(s['maxTradesPerDay']) < 1:
                 raise ApiError('Günlük limitler geçersiz.')
-            reconciled = self.reconcile(s['symbol'])
+            symbols = self._symbols(s.get('symbols', s.get('symbol')))
+            if s.get('symbol') not in symbols: raise ApiError('Ana çift izleme listesinde olmalı.')
+            max_open = s.get('maxOpenPositions', 1)
+            if isinstance(max_open, bool) or not isinstance(max_open, int) or not 1 <= max_open <= 20:
+                raise ApiError('Eşzamanlı pozisyon sınırı 1–20 olmalı.')
+            reconciled = self.reconcile_many(symbols)
             if not reconciled['safe']: raise ApiError('Açık/belirsiz emir veya miktar uyuşmazlığı var.', uncertain=True)
             positions, *_ = self._positions()
             capital = min(dec(s['maxCapital']), self.max_capital)
@@ -208,9 +243,11 @@ class BotService:
             if sum((p['basis'] for p in positions.values() if p['quantity'] > 0), D(0)) > capital or any(
                     p['quantity'] > 0 and p['basis'] > position_limit for p in positions.values()):
                 raise ApiError('Mevcut bot pozisyonu yeni sermaye/pozisyon sınırını aşıyor. Önce hesabı kontrol edin.')
-            if any(p['quantity'] > 0 and sym != s['symbol'] for sym, p in positions.items()):
-                raise ApiError('Başka çiftte bot pozisyonu açık; çift değiştirilemez.')
-            self._rules(s['symbol']); self.settings = s; self.armed = True
+            if sum(p['quantity'] > 0 for p in positions.values()) > max_open:
+                raise ApiError('Mevcut pozisyon sayısı yeni sınırı aşıyor.')
+            catalog = self.client.symbols()
+            for symbol in symbols: self._rules(symbol, catalog)
+            self.settings = dict(s, symbols=symbols, maxOpenPositions=max_open); self.armed = True
             return {'armed': True, 'maxCapital': s['maxCapital']}
     def halt(self):
         # Disarm before locking: an in-flight order can finish but no next order starts.
@@ -276,7 +313,7 @@ class BotService:
             if not self.armed or not self.enabled or self.settings is None: raise ApiError('Canlı bot aktif değil.', status=403)
             if self._unknown(): raise ApiError('Belirsiz emir varken yeni emir gönderilmez.', uncertain=True)
             s, symbol, side = self.settings, body.get('symbol'), body.get('side')
-            if symbol != s['symbol'] or side not in ('BUY', 'SELL'): raise ApiError('İşlem çifti/yönü geçersiz.')
+            if symbol not in s['symbols'] or side not in ('BUY', 'SELL'): raise ApiError('İşlem çifti/yönü geçersiz.')
             self.client.sync_time(); account = self.client.account(); fee_rate = self._fee(account)
             if int(account.get('canTrade', 0)) != 1: raise ApiError('Spot işlem yetkisi yok.')
             if self.client.orders(symbol, 1): raise ApiError('Açık emir varken yeni bot emri açılmaz.')
@@ -284,7 +321,17 @@ class BotService:
             book = self.client.book(symbol); bid, ask = dec(book['bids'][0][0]), dec(book['asks'][0][0])
             if not D(0) < bid <= ask: raise ApiError('Emir defteri geçersiz.')
             positions, _, daily_realized, entries = self._positions(); p = positions.get(symbol)
-            unrealized = sum((p0['quantity'] * bid * (1 - fee_rate) - p0['basis'] for sym, p0 in positions.items() if sym == symbol), D(0))
+            unrealized = D(0)
+            for sym, p0 in positions.items():
+                if p0['quantity'] <= 0: continue
+                if side == 'BUY':
+                    if sym not in s['symbols'] or assets.get(sym.split('_')[0], D(0)) + D('0.000000000001') < p0['quantity']:
+                        raise ApiError('Coin bakiyesi bot defteriyle uyuşmuyor; uzlaştırma gerekiyor.', uncertain=True)
+                    other_bid = bid if sym == symbol else dec(self.client.book(sym)['bids'][0][0])
+                    if other_bid <= 0: raise ApiError('Pozisyon fiyatı doğrulanamadı.')
+                    unrealized += p0['quantity'] * other_bid * (1 - dec(s['slippagePct']) / 100) * (1 - fee_rate) - p0['basis']
+                elif sym == symbol:
+                    unrealized += p0['quantity'] * bid * (1 - dec(s['slippagePct']) / 100) * (1 - fee_rate) - p0['basis']
             loss_limit = min(self.daily_loss, dec(s['dailyLossLimit']))
             if daily_realized + unrealized <= -loss_limit: self._lock_day()
             budget_limit, profit_min = None, None
@@ -293,10 +340,17 @@ class BotService:
             if side == 'BUY':
                 if self._risk_locked() or entries >= min(self.max_entries, int(s['maxTradesPerDay'])):
                     raise ApiError('Günlük risk/işlem limiti; yeni alımlar durduruldu.')
-                if any(v['quantity'] > 0 for v in positions.values()): raise ApiError('Bot pozisyonu zaten açık.')
+                if p and p['quantity'] > 0: raise ApiError('Bu coin için bot pozisyonu zaten açık.')
+                if sum(v['quantity'] > 0 for v in positions.values()) >= s['maxOpenPositions']:
+                    raise ApiError('Eşzamanlı pozisyon sınırına ulaşıldı.')
+                for other in s['symbols']:
+                    if other != symbol and self.client.orders(other, 1):
+                        raise ApiError('İzlenen coin’de açık emir var; önce uzlaştırın.')
                 if (ask - bid) / ((ask + bid) / 2) * 100 > dec(s['maxSpreadPct']): raise ApiError('Spread limiti aşıldı.')
                 available = assets.get('TRY', D(0)); requested = dec(body.get('budget'))
-                cap = min(dec(s['maxPosition']), dec(s['maxCapital']), self.max_capital, self.max_position,
+                invested = sum((v['basis'] for v in positions.values() if v['quantity'] > 0), D(0))
+                remaining = min(dec(s['maxCapital']), self.max_capital) - invested
+                cap = min(dec(s['maxPosition']), remaining, self.max_position,
                           available, available * dec(s['capitalPct']) / 100)
                 if requested <= 0 or requested > cap + D('0.000001'): raise ApiError('Sermaye üst sınırı aşılıyor.')
                 budget_limit = fmt(requested)

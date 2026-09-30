@@ -37,12 +37,12 @@ sudo systemctl status cryptoloop
 
 ## 3. Telefonda salt okuma kontrolü
 
-1. CryptoLoop TR → **Ayarlar → Binance TR hesap bağlantısı → Güvenli sunucuyu bağla**.
+1. Önce **Ayarlar → Coin listesini düzenle** ile resmi katalogdaki coin’leri seçin. Ardından CryptoLoop TR → **Ayarlar → Binance TR hesap bağlantısı → Güvenli sunucuyu bağla**.
 2. Kendi HTTPS adresinizi ve **bot erişim token'ını** girin. Bu alan Binance API Key/Secret için değildir.
 3. **Hesabı doğrula · Emir göndermez** düğmesine basın.
 4. Gerçek TRY bakiyesi, hesabın TRY komisyonu, bid/ask ve spread, açık/belirsiz emir sayıları, sunucu limitleri görüntülenir. İlk kurulumda “Gerçek emirler sunucuda kapalı” yazmalıdır.
 
-Bu kontrol `GET /v1/preflight?symbol=BTC_TRY` kullanır; borsaya yalnızca GET istekleri gönderir. Emir koymaz/iptal etmez, botu arm etmez, paper bakiyeyi değiştirmez. Hata olduğunda önceki başarılı bakiye kaldırılır. Canlıya geçişte son kontrolün aynı çift için ve en fazla beş dakika önce yapılmış olması gerekir. Başlatmada ayrıca yeni kontrol ve reconcile yapılır.
+Bu kontrol `GET /v1/preflight?symbols=BTC_TRY,ETH_TRY,...` (tek çift için `symbol=BTC_TRY`) kullanır; borsaya yalnızca GET istekleri gönderir. Emir koymaz/iptal etmez, botu arm etmez, paper bakiyeyi değiştirmez. Hata olduğunda önceki başarılı bakiye kaldırılır. Canlıya geçişte son kontrolün seçili bütün çiftler için ve en fazla beş dakika önce yapılmış olması gerekir. Başlatmada ayrıca yeni kontrol ve reconcile yapılır.
 
 429/timeout/401/451 veya eksik TRY komisyonu doğrulama başarısı sayılmaz. Özel API ve gerçek emirler bu geliştirme ortamında uçtan uca denenmedi; sizin sunucunuzdaki okuma kontrolü ilk gerçek hesap doğrulamasıdır.
 
